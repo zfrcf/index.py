@@ -163,7 +163,15 @@ async def log_ticket_action(guild: discord.Guild, content: str):
             await channel.send(content)
         except Exception:
             pass
-
+            
+async def log_member_event(guild: discord.Guild, embed: discord.Embed):
+    channel = guild.get_channel(MEMBER_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+            
 # =========================================================
 # GIVEAWAYS
 # =========================================================
