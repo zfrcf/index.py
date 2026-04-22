@@ -156,6 +156,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # HELPERS
 # =========================================================
 
+async def log_sanction(guild: discord.Guild, embed: discord.Embed):
+    channel = guild.get_channel(SANCTION_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
 def has_role(member: discord.Member, role_id: int) -> bool:
     return any(role.id == role_id for role in member.roles)
 
