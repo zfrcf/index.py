@@ -939,6 +939,37 @@ async def on_ready():
     if not giveaway_watcher.is_running():
         giveaway_watcher.start()
 
+ALL_MEMBERS_CHANNEL_ID = 1496534691715743854
+HUMANS_CHANNEL_ID = 1496538997323862179
+BOTS_CHANNEL_ID = 1496539148570591252
+
+@tasks.loop(seconds=60)
+async def update_stats():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    all_members = guild.member_count
+    humans = len([m for m in guild.members if not m.bot])
+    bots = len([m for m in guild.members if m.bot])
+
+    try:
+        all_channel = guild.get_channel(ALL_MEMBERS_CHANNEL_ID)
+        human_channel = guild.get_channel(HUMANS_CHANNEL_ID)
+        bot_channel = guild.get_channel(BOTS_CHANNEL_ID)
+
+        if all_channel:
+            await all_channel.edit(name=f"📊 All Members : {all_members}")
+
+        if human_channel:
+            await human_channel.edit(name=f"👤 Members : {humans}")
+
+        if bot_channel:
+            await bot_channel.edit(name=f"🤖 Bots : {bots}")
+
+    except Exception as e:
+        print("Erreur stats:", e)
+        
 # =========================================================
 # START
 # =========================================================
