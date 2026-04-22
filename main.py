@@ -1010,12 +1010,45 @@ async def on_member_join(member: discord.Member):
     }
     save_json(VERIFY_FILE, vdata)
 
-    await update_server_stats_once()
+    embed = discord.Embed(
+        title="📥 Nouveau membre",
+        description=(
+            f"{member.mention} a rejoint le serveur.\n\n"
+            f"**Nom :** `{member}`\n"
+            f"**ID :** `{member.id}`\n"
+            f"**Compte créé :** <t:{int(member.created_at.timestamp())}:F>\n"
+            f"**Membres totaux :** `{member.guild.member_count}`"
+        ),
+        color=discord.Color.green(),
+        timestamp=now_utc()
+    )
 
+    if member.display_avatar:
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+    await log_member_event(member.guild, embed)
+    await update_server_stats_once()
+    
 @bot.event
 async def on_member_remove(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
+
+    embed = discord.Embed(
+        title="📤 Membre parti",
+        description=(
+            f"`{member}` a quitté le serveur.\n\n"
+            f"**ID :** `{member.id}`\n"
+            f"**Membres restants :** `{member.guild.member_count}`"
+        ),
+        color=discord.Color.red(),
+        timestamp=now_utc()
+    )
+
+    if member.display_avatar:
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+    await log_member_event(member.guild, embed)
     await update_server_stats_once()
 
 @bot.event
