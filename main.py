@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import asyncio
 import random
@@ -7,12 +8,11 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands, tasks
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # =========================================================
 # CONFIG
 # =========================================================
-# Logs arrivée / départ
-MEMBER_LOG_CHANNEL_ID = 1496544952161665215
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -24,13 +24,13 @@ GUILD_ID = 1336409517298286612
 # GIVEAWAYS
 # =========================
 
-# Salon STAFF où seul le staff voit le bouton "Créer un giveaway"
+# Salon STAFF où seul le staff voit le bouton de création
 GIVEAWAY_STAFF_PANEL_CHANNEL_ID = 1496178317739556994
 
-# Salon PUBLIC où les giveaways sont envoyés pour participation
+# Salon PUBLIC où les giveaways sont publiés
 GIVEAWAY_PUBLIC_CHANNEL_ID = 1496178317739556994
 
-# Rôle autorisé à créer / reroll les giveaways
+# Rôle autorisé à créer / reroll
 GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644
 
 # =========================
@@ -51,16 +51,32 @@ UNVERIFIED_ROLE_ID = 1496179992651104506
 VERIFIED_ROLE_ID = 1496179832717836368
 
 VERIFY_TIMEOUT_SECONDS = 300
-AUTO_KICK_UNVERIFIED = True
 MAX_VERIFY_TRIES = 3
+SEND_VERIFY_WELCOME_MESSAGE = True
+
+# Anti-alt
+MIN_ACCOUNT_AGE_DAYS = 3
+AUTO_KICK_TOO_RECENT_ACCOUNT = False  # True si tu veux kick direct
+
+# Anti-double heuristique
+ENABLE_ANTI_DOUBLE_HEURISTIC = True
+ANTI_DOUBLE_LOOKBACK_DAYS = 14
+AUTO_KICK_ON_DOUBLE_HEURISTIC = False
 
 # =========================
-# SERVER STATS
+# STATS
 # =========================
 
 ALL_MEMBERS_CHANNEL_ID = 0
 MEMBERS_CHANNEL_ID = 0
 BOTS_CHANNEL_ID = 0
+
+# =========================
+# LOGS
+# =========================
+
+MEMBER_LOG_CHANNEL_ID = 0
+VERIFY_LOG_CHANNEL_ID = 0
 
 # =========================
 # FILES
@@ -156,14 +172,6 @@ async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
     except Exception:
         return None
 
-async def log_ticket_action(guild: discord.Guild, content: str):
-    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
-    if isinstance(channel, discord.TextChannel):
-        try:
-            await channel.send(content)
-        except Exception:
-            pass
-            
 async def log_member_event(guild: discord.Guild, embed: discord.Embed):
     channel = guild.get_channel(MEMBER_LOG_CHANNEL_ID)
     if isinstance(channel, discord.TextChannel):
@@ -171,27 +179,148 @@ async def log_member_event(guild: discord.Guild, embed: discord.Embed):
             await channel.send(embed=embed)
         except Exception:
             pass
-            
+
+async def log_verify_event(guild: discord.Guild, embed: discord.Embed):
+    channel = guild.get_channel(VERIFY_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+async def log_ticket_action(guild: discord.Guild, content: str):
+    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(content)
+        except Exception:
+            pass
+
+def account_age_days(member: discord.Member) -> int:
+    return max(0, (now_utc() - member.created_at).days)
+
+def is_recent_account(member: discord.Member) -> bool:
+    return account_age_days(member) < MIN_ACCOUNT_AGE_DAYS
+
+def anti_double_suspicion(member: discord.Member) -> tuple[bool, str]:
+    """
+    Heuristique simple.
+    Ce n'est pas une détection IP.
+    """
+    if not ENABLE_ANTI_DOUBLE_HEURISTIC:
+        return False, ""
+
+    lookback = timedelta(days=ANTI_DOUBLE_LOOKBACK_DAYS)
+    lowered_name = member.name.lower().strip()
+    lowered_display = member.display_name.lower().strip()
+
+    for other in member.guild.members:
+        if other.id == member.id or other.bot:
+            continue
+
+        if other.name.lower().strip() == lowered_name:
+            if other.joined_at and (now_utc() - other.joined_at) <= lookback:
+                return True, f"Même username que {other} ({other.id})"
+
+        if lowered_display and other.display_name.lower().strip() == lowered_display and is_recent_account(member):
+            if other.joined_at and (now_utc() - other.joined_at) <= lookback:
+                return True, f"Même pseudo affiché que {other} ({other.id}) + compte récent"
+
+    return False, ""
+
+def get_font(size: int):
+    possible_fonts = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for path in possible_fonts:
+        try:
+            return ImageFont.truetype(path, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+def generate_captcha_image(code: str) -> io.BytesIO:
+    width, height = 340, 120
+    image = Image.new("RGB", (width, height), (245, 247, 252))
+    draw = ImageDraw.Draw(image)
+
+    for _ in range(25):
+        x1 = random.randint(0, width)
+        y1 = random.randint(0, height)
+        x2 = x1 + random.randint(20, 80)
+        y2 = y1 + random.randint(5, 30)
+        color = (
+            random.randint(180, 230),
+            random.randint(180, 230),
+            random.randint(180, 230),
+        )
+        draw.ellipse((x1, y1, x2, y2), outline=color, width=1)
+
+    for _ in range(10):
+        draw.line(
+            (
+                random.randint(0, width),
+                random.randint(0, height),
+                random.randint(0, width),
+                random.randint(0, height),
+            ),
+            fill=(
+                random.randint(70, 180),
+                random.randint(70, 180),
+                random.randint(70, 180),
+            ),
+            width=random.randint(1, 3),
+        )
+
+    font = get_font(42)
+    x = 25
+    for char in code:
+        y = random.randint(20, 45)
+        color = (
+            random.randint(20, 90),
+            random.randint(20, 90),
+            random.randint(20, 90),
+        )
+        angle = random.randint(-20, 20)
+
+        char_img = Image.new("RGBA", (60, 70), (255, 255, 255, 0))
+        char_draw = ImageDraw.Draw(char_img)
+        char_draw.text((10, 5), char, font=font, fill=color)
+        char_img = char_img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=1)
+
+        image.paste(char_img, (x, y), char_img)
+        x += random.randint(42, 52)
+
+    for _ in range(1200):
+        draw.point(
+            (random.randint(0, width - 1), random.randint(0, height - 1)),
+            fill=(
+                random.randint(120, 220),
+                random.randint(120, 220),
+                random.randint(120, 220),
+            ),
+        )
+
+    image = image.filter(ImageFilter.SMOOTH)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+def captcha_discord_file(code: str) -> discord.File:
+    return discord.File(generate_captcha_image(code), filename="captcha.png")
+
 # =========================================================
 # GIVEAWAYS
 # =========================================================
 
 class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
-    prize = discord.ui.TextInput(
-        label="Lot",
-        placeholder="Exemple : Nitro 1 mois",
-        max_length=100
-    )
-    duration_minutes = discord.ui.TextInput(
-        label="Durée en minutes",
-        placeholder="Exemple : 60",
-        max_length=10
-    )
-    winners_count = discord.ui.TextInput(
-        label="Nombre de gagnants",
-        placeholder="Exemple : 1",
-        max_length=3
-    )
+    prize = discord.ui.TextInput(label="Lot", placeholder="Exemple : Nitro 1 mois", max_length=100)
+    duration_minutes = discord.ui.TextInput(label="Durée en minutes", placeholder="Exemple : 60", max_length=10)
+    winners_count = discord.ui.TextInput(label="Nombre de gagnants", placeholder="Exemple : 1", max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -606,7 +735,6 @@ async def build_transcript_file(channel: discord.TextChannel) -> str:
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) if lines else "Aucun message.")
-
     return path
 
 async def export_transcript(channel: discord.TextChannel, guild: discord.Guild):
@@ -622,12 +750,7 @@ class TicketManageView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Fermer",
-        emoji="🔒",
-        style=discord.ButtonStyle.danger,
-        custom_id="ticket_close_button"
-    )
+    @discord.ui.button(label="Fermer", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket_close_button")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if (
             not interaction.guild
@@ -657,12 +780,7 @@ class TicketManageView(discord.ui.View):
         await log_ticket_action(interaction.guild, f"🗑️ Ticket fermé : #{interaction.channel.name} par {interaction.user.mention}")
         await interaction.channel.delete(reason=f"Ticket fermé par {interaction.user}")
 
-    @discord.ui.button(
-        label="Transcript",
-        emoji="📄",
-        style=discord.ButtonStyle.secondary,
-        custom_id="ticket_transcript_button"
-    )
+    @discord.ui.button(label="Transcript", emoji="📄", style=discord.ButtonStyle.secondary, custom_id="ticket_transcript_button")
     async def transcript_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if (
             not interaction.guild
@@ -683,12 +801,7 @@ class TicketManageView(discord.ui.View):
         file_path = await build_transcript_file(interaction.channel)
         await interaction.response.send_message("Transcript généré.", file=discord.File(file_path), ephemeral=True)
 
-    @discord.ui.button(
-        label="Ajouter",
-        emoji="➕",
-        style=discord.ButtonStyle.primary,
-        custom_id="ticket_add_user_button"
-    )
+    @discord.ui.button(label="Ajouter", emoji="➕", style=discord.ButtonStyle.primary, custom_id="ticket_add_user_button")
     async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         if (
             not interaction.guild
@@ -702,12 +815,7 @@ class TicketManageView(discord.ui.View):
 
         await interaction.response.send_modal(AddUserModal(interaction.channel.id))
 
-    @discord.ui.button(
-        label="Retirer",
-        emoji="➖",
-        style=discord.ButtonStyle.secondary,
-        custom_id="ticket_remove_user_button"
-    )
+    @discord.ui.button(label="Retirer", emoji="➖", style=discord.ButtonStyle.secondary, custom_id="ticket_remove_user_button")
     async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         if (
             not interaction.guild
@@ -725,7 +833,15 @@ class TicketManageView(discord.ui.View):
 # VERIFY / CAPTCHA
 # =========================================================
 
-class VerifyCaptchaModal(discord.ui.Modal, title="Vérification du serveur"):
+class VerifyRetryView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Entrer le code", emoji="✍️", style=discord.ButtonStyle.primary)
+    async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VerifyCaptchaModal())
+
+class VerifyCaptchaModal(discord.ui.Modal, title="Validation du captcha"):
     captcha_input = discord.ui.TextInput(
         label="Recopie le captcha",
         placeholder="Exemple : A1B2C3",
@@ -753,29 +869,62 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Vérification du serveur"):
 
             tries_left = max(0, MAX_VERIFY_TRIES - entry["tries"])
 
+            fail_embed = discord.Embed(
+                title="❌ Vérification ratée",
+                description=(
+                    f"**Membre :** {interaction.user.mention}\n"
+                    f"**Essais utilisés :** {entry['tries']}/{MAX_VERIFY_TRIES}\n"
+                    f"**Essais restants :** {tries_left}"
+                ),
+                color=discord.Color.red(),
+                timestamp=now_utc()
+            )
+            if interaction.user.display_avatar:
+                fail_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            await log_verify_event(interaction.guild, fail_embed)
+
             if tries_left <= 0:
                 try:
                     await interaction.guild.kick(interaction.user, reason="Captcha incorrect trop de fois")
                 except Exception:
                     pass
 
+                kick_embed = discord.Embed(
+                    title="🛑 Expulsion automatique",
+                    description=(
+                        f"**Membre :** `{interaction.user}`\n"
+                        f"**ID :** `{interaction.user.id}`\n"
+                        f"**Raison :** Trop d'erreurs captcha"
+                    ),
+                    color=discord.Color.dark_red(),
+                    timestamp=now_utc()
+                )
+                if interaction.user.display_avatar:
+                    kick_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+                await log_verify_event(interaction.guild, kick_embed)
+
                 return await interaction.response.send_message(
-                    "Captcha incorrect trop de fois. Expulsion.",
+                    "❌ Trop d'erreurs. Tu as été expulsé du serveur.",
                     ephemeral=True
                 )
+
+            new_code = entry["captcha"]
+            image_file = captcha_discord_file(new_code)
 
             embed = discord.Embed(
                 title="❌ Captcha incorrect",
                 description=(
                     f"Il te reste **{tries_left} essai(s)**.\n"
-                    f"**Nouveau captcha :** `{entry['captcha']}`"
+                    f"Un **nouveau captcha** a été généré."
                 ),
                 color=discord.Color.red()
             )
-            embed.set_footer(text="Clique sur Réessayer pour entrer le nouveau code.")
+            embed.set_image(url="attachment://captcha.png")
+            embed.set_footer(text="Clique sur Entrer le code pour recommencer.")
 
             return await interaction.response.send_message(
                 embed=embed,
+                file=image_file,
                 ephemeral=True,
                 view=VerifyRetryView()
             )
@@ -785,7 +934,10 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Vérification du serveur"):
         unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
 
         if not verified_role or not unverified_role:
-            return await interaction.response.send_message("Rôles de vérification introuvables.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Rôles de vérification introuvables.",
+                ephemeral=True
+            )
 
         try:
             if unverified_role in interaction.user.roles:
@@ -793,26 +945,34 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Vérification du serveur"):
             if verified_role not in interaction.user.roles:
                 await interaction.user.add_roles(verified_role, reason="Captcha validé")
         except Exception:
-            return await interaction.response.send_message("Impossible de modifier les rôles.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Impossible de modifier les rôles.",
+                ephemeral=True
+            )
 
         entry["verified"] = True
         entry["updated_at"] = dt_to_iso(now_utc())
         save_json(VERIFY_FILE, vdata)
 
-        embed = discord.Embed(
+        success_embed = discord.Embed(
             title="✅ Vérification réussie",
-            description="Bienvenue sur le serveur. Tu as maintenant accès aux salons.",
+            description=(
+                f"**Membre :** {interaction.user.mention}\n"
+                f"Le membre a obtenu l'accès au serveur."
+            ),
+            color=discord.Color.green(),
+            timestamp=now_utc()
+        )
+        if interaction.user.display_avatar:
+            success_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        await log_verify_event(interaction.guild, success_embed)
+
+        done_embed = discord.Embed(
+            title="✅ Vérification réussie",
+            description="Tu as maintenant accès au serveur.",
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-class VerifyRetryView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=300)
-
-    @discord.ui.button(label="Réessayer", emoji="🔁", style=discord.ButtonStyle.primary)
-    async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(VerifyCaptchaModal())
+        await interaction.response.send_message(embed=done_embed, ephemeral=True)
 
 class VerifyPanelView(discord.ui.View):
     def __init__(self):
@@ -843,25 +1003,30 @@ class VerifyPanelView(discord.ui.View):
         }
         save_json(VERIFY_FILE, vdata)
 
+        image_file = captcha_discord_file(code)
+
         embed = discord.Embed(
             title=f"Bienvenue sur {interaction.guild.name}",
             description=(
-                "Pour accéder au serveur, complète le captcha avec **6 caractères majuscules**.\n\n"
-                f"**Captcha :** `{code}`\n"
-                f"**Expiration automatique :** dans 5 minutes\n"
-                f"**Essais max :** {MAX_VERIFY_TRIES}"
+                "Pour accéder au serveur, complète le captcha.\n\n"
+                f"**Temps limite :** 5 minutes\n"
+                f"**Essais max :** {MAX_VERIFY_TRIES}\n"
+                f"**Compte minimum recommandé :** {MIN_ACCOUNT_AGE_DAYS} jour(s)"
             ),
             color=discord.Color.orange()
         )
-        embed.set_footer(text="Clique sur le bouton ci-dessous pour entrer le code.")
+        embed.set_image(url="attachment://captcha.png")
+        embed.set_footer(text="Clique sur Entrer le code pour valider.")
 
-        await interaction.response.send_message(embed=embed, ephemeral=True, view=VerifyRetryView())
+        await interaction.response.send_message(
+            embed=embed,
+            file=image_file,
+            ephemeral=True,
+            view=VerifyRetryView()
+        )
 
 @tasks.loop(seconds=30)
 async def verify_timeout_watcher():
-    if not AUTO_KICK_UNVERIFIED:
-        return
-
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return
@@ -890,6 +1055,20 @@ async def verify_timeout_watcher():
                     await guild.kick(member, reason="Non vérifié après 5 minutes")
                 except Exception:
                     pass
+
+                kick_embed = discord.Embed(
+                    title="🛑 Expulsion automatique",
+                    description=(
+                        f"**Membre :** `{member}`\n"
+                        f"**ID :** `{member.id}`\n"
+                        f"**Raison :** Non vérifié après 5 minutes"
+                    ),
+                    color=discord.Color.dark_red(),
+                    timestamp=now_utc()
+                )
+                if member.display_avatar:
+                    kick_embed.set_thumbnail(url=member.display_avatar.url)
+                await log_verify_event(guild, kick_embed)
 
             vdata["users"].pop(user_id, None)
             changed = True
@@ -993,6 +1172,38 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
         save_json(VERIFY_FILE, data)
 
 # =========================================================
+# WELCOME / ARRIVEE / DEPART
+# =========================================================
+
+async def send_verify_welcome(member: discord.Member):
+    if not SEND_VERIFY_WELCOME_MESSAGE:
+        return
+
+    channel = member.guild.get_channel(VERIFY_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = discord.Embed(
+        title=f"Bienvenue sur {member.guild.name}",
+        description=(
+            f"{member.mention}, pour accéder au serveur, tu dois compléter la vérification.\n\n"
+            f"🔒 Tu ne verras le reste du serveur qu’après validation.\n"
+            f"⏳ Tu as **5 minutes** pour te vérifier.\n"
+            f"❌ Après **{MAX_VERIFY_TRIES} erreurs**, tu peux être expulsé."
+        ),
+        color=discord.Color.blurple(),
+        timestamp=now_utc()
+    )
+    if member.display_avatar:
+        embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text="Clique sur le panneau de vérification ci-dessous.")
+
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+# =========================================================
 # EVENTS
 # =========================================================
 
@@ -1001,13 +1212,15 @@ async def on_member_join(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
 
-    role = member.guild.get_role(UNVERIFIED_ROLE_ID)
-    if role:
+    # Rôle non vérifié
+    unverified_role = member.guild.get_role(UNVERIFIED_ROLE_ID)
+    if unverified_role:
         try:
-            await member.add_roles(role, reason="Nouveau membre non vérifié")
+            await member.add_roles(unverified_role, reason="Nouveau membre non vérifié")
         except Exception:
             pass
 
+    # Prépare data captcha
     vdata = load_json(VERIFY_FILE, {"users": {}, "panel_message_id": None})
     vdata["users"][str(member.id)] = {
         "captcha": random_code(),
@@ -1018,31 +1231,111 @@ async def on_member_join(member: discord.Member):
     }
     save_json(VERIFY_FILE, vdata)
 
-    embed = discord.Embed(
+    # Welcome stylé
+    await send_verify_welcome(member)
+
+    # Log arrivée
+    join_embed = discord.Embed(
         title="📥 Nouveau membre",
         description=(
             f"{member.mention} a rejoint le serveur.\n\n"
             f"**Nom :** `{member}`\n"
             f"**ID :** `{member.id}`\n"
             f"**Compte créé :** <t:{int(member.created_at.timestamp())}:F>\n"
+            f"**Âge du compte :** `{account_age_days(member)} jour(s)`\n"
             f"**Membres totaux :** `{member.guild.member_count}`"
         ),
         color=discord.Color.green(),
         timestamp=now_utc()
     )
-
     if member.display_avatar:
-        embed.set_thumbnail(url=member.display_avatar.url)
+        join_embed.set_thumbnail(url=member.display_avatar.url)
+    await log_member_event(member.guild, join_embed)
 
-    await log_member_event(member.guild, embed)
+    # Anti-alt
+    if is_recent_account(member):
+        alt_embed = discord.Embed(
+            title="⚠️ Compte récent détecté",
+            description=(
+                f"**Membre :** {member.mention}\n"
+                f"**Âge du compte :** `{account_age_days(member)} jour(s)`\n"
+                f"**Minimum attendu :** `{MIN_ACCOUNT_AGE_DAYS} jour(s)`"
+            ),
+            color=discord.Color.orange(),
+            timestamp=now_utc()
+        )
+        if member.display_avatar:
+            alt_embed.set_thumbnail(url=member.display_avatar.url)
+        await log_verify_event(member.guild, alt_embed)
+
+        if AUTO_KICK_TOO_RECENT_ACCOUNT:
+            try:
+                await member.guild.kick(member, reason="Compte trop récent")
+            except Exception:
+                pass
+
+            kick_embed = discord.Embed(
+                title="🛑 Expulsion automatique",
+                description=(
+                    f"**Membre :** `{member}`\n"
+                    f"**ID :** `{member.id}`\n"
+                    f"**Raison :** Compte trop récent"
+                ),
+                color=discord.Color.dark_red(),
+                timestamp=now_utc()
+            )
+            if member.display_avatar:
+                kick_embed.set_thumbnail(url=member.display_avatar.url)
+            await log_verify_event(member.guild, kick_embed)
+            await update_server_stats_once()
+            return
+
+    # Anti-double heuristique
+    suspicious, reason = anti_double_suspicion(member)
+    if suspicious:
+        double_embed = discord.Embed(
+            title="⚠️ Suspicion de double compte",
+            description=(
+                f"**Membre :** {member.mention}\n"
+                f"**Raison :** {reason}"
+            ),
+            color=discord.Color.orange(),
+            timestamp=now_utc()
+        )
+        if member.display_avatar:
+            double_embed.set_thumbnail(url=member.display_avatar.url)
+        await log_verify_event(member.guild, double_embed)
+
+        if AUTO_KICK_ON_DOUBLE_HEURISTIC:
+            try:
+                await member.guild.kick(member, reason=f"Suspicion de double compte: {reason}")
+            except Exception:
+                pass
+
+            kick_embed = discord.Embed(
+                title="🛑 Expulsion automatique",
+                description=(
+                    f"**Membre :** `{member}`\n"
+                    f"**ID :** `{member.id}`\n"
+                    f"**Raison :** Suspicion de double compte"
+                ),
+                color=discord.Color.dark_red(),
+                timestamp=now_utc()
+            )
+            if member.display_avatar:
+                kick_embed.set_thumbnail(url=member.display_avatar.url)
+            await log_verify_event(member.guild, kick_embed)
+            await update_server_stats_once()
+            return
+
     await update_server_stats_once()
-    
+
 @bot.event
 async def on_member_remove(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
 
-    embed = discord.Embed(
+    leave_embed = discord.Embed(
         title="📤 Membre parti",
         description=(
             f"`{member}` a quitté le serveur.\n\n"
@@ -1052,11 +1345,10 @@ async def on_member_remove(member: discord.Member):
         color=discord.Color.red(),
         timestamp=now_utc()
     )
-
     if member.display_avatar:
-        embed.set_thumbnail(url=member.display_avatar.url)
+        leave_embed.set_thumbnail(url=member.display_avatar.url)
+    await log_member_event(member.guild, leave_embed)
 
-    await log_member_event(member.guild, embed)
     await update_server_stats_once()
 
 @bot.event
