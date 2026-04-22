@@ -1218,6 +1218,59 @@ async def send_verify_welcome(member: discord.Member):
 # =========================================================
 
 @bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    embed = discord.Embed(
+        title="🔨 Membre banni",
+        description=(
+            f"**Utilisateur :** {user.mention if hasattr(user, 'mention') else user}\n"
+            f"**Nom :** `{user}`\n"
+            f"**ID :** `{user.id}`"
+        ),
+        color=discord.Color.dark_red(),
+        timestamp=now_utc()
+    )
+
+    if user.display_avatar:
+        embed.set_thumbnail(url=user.display_avatar.url)
+
+    try:
+        async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+            if entry.target.id == user.id:
+                embed.add_field(name="Modérateur", value=f"{entry.user.mention}", inline=True)
+                embed.add_field(name="Raison", value=entry.reason or "Aucune", inline=True)
+                break
+    except Exception:
+        pass
+
+    await log_sanction(guild, embed)
+
+@bot.event
+async def on_member_unban(guild: discord.Guild, user: discord.User):
+    embed = discord.Embed(
+        title="✅ Membre débanni",
+        description=(
+            f"**Utilisateur :** `{user}`\n"
+            f"**ID :** `{user.id}`"
+        ),
+        color=discord.Color.green(),
+        timestamp=now_utc()
+    )
+
+    if user.display_avatar:
+        embed.set_thumbnail(url=user.display_avatar.url)
+
+    try:
+        async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.unban):
+            if entry.target.id == user.id:
+                embed.add_field(name="Modérateur", value=f"{entry.user.mention}", inline=True)
+                embed.add_field(name="Raison", value=entry.reason or "Aucune", inline=True)
+                break
+    except Exception:
+        pass
+
+    await log_sanction(guild, embed)
+
+@bot.event
 async def on_member_join(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
@@ -1345,6 +1398,39 @@ async def on_member_remove(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
 
+    kicked = False
+    kick_moderator = None
+    kick_reason = None
+
+    try:
+        async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
+            if entry.target.id == member.id:
+                kicked = True
+                kick_moderator = entry.user
+                kick_reason = entry.reason
+                break
+    except Exception:
+        pass
+
+    if kicked:
+        sanction_embed = discord.Embed(
+            title="👢 Membre expulsé",
+            description=(
+                f"**Utilisateur :** `{member}`\n"
+                f"**ID :** `{member.id}`"
+            ),
+            color=discord.Color.orange(),
+            timestamp=now_utc()
+        )
+        if member.display_avatar:
+            sanction_embed.set_thumbnail(url=member.display_avatar.url)
+
+        if kick_moderator:
+            sanction_embed.add_field(name="Modérateur", value=kick_moderator.mention, inline=True)
+        sanction_embed.add_field(name="Raison", value=kick_reason or "Aucune", inline=True)
+
+        await log_sanction(member.guild, sanction_embed)
+
     leave_embed = discord.Embed(
         title="📤 Membre parti",
         description=(
@@ -1355,11 +1441,73 @@ async def on_member_remove(member: discord.Member):
         color=discord.Color.red(),
         timestamp=now_utc()
     )
+
     if member.display_avatar:
         leave_embed.set_thumbnail(url=member.display_avatar.url)
-    await log_member_event(member.guild, leave_embed)
 
+    await log_member_event(member.guild, leave_embed)
     await update_server_stats_once()
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    if after.guild.id != GUILD_ID:
+        return
+
+    before_timeout = before.timed_out_until
+    after_timeout = after.timed_out_until
+
+    # Timeout ajouté / modifié
+    if before_timeout != after_timeout and after_timeout is not None:
+        embed = discord.Embed(
+            title="🔇 Membre timeout",
+            description=(
+                f"**Membre :** {after.mention}\n"
+                f"**ID :** `{after.id}`\n"
+                f"**Fin du timeout :** <t:{int(after_timeout.timestamp())}:F>"
+            ),
+            color=discord.Color.orange(),
+            timestamp=now_utc()
+        )
+
+        if after.display_avatar:
+            embed.set_thumbnail(url=after.display_avatar.url)
+
+        try:
+            async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target.id == after.id:
+                    embed.add_field(name="Modérateur", value=entry.user.mention, inline=True)
+                    embed.add_field(name="Raison", value=entry.reason or "Aucune", inline=True)
+                    break
+        except Exception:
+            pass
+
+        await log_sanction(after.guild, embed)
+
+    # Timeout retiré
+    if before_timeout is not None and after_timeout is None:
+        embed = discord.Embed(
+            title="🔊 Timeout retiré",
+            description=(
+                f"**Membre :** {after.mention}\n"
+                f"**ID :** `{after.id}`"
+            ),
+            color=discord.Color.green(),
+            timestamp=now_utc()
+        )
+
+        if after.display_avatar:
+            embed.set_thumbnail(url=after.display_avatar.url)
+
+        try:
+            async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target.id == after.id:
+                    embed.add_field(name="Modérateur", value=entry.user.mention, inline=True)
+                    embed.add_field(name="Raison", value=entry.reason or "Aucune", inline=True)
+                    break
+        except Exception:
+            pass
+
+        await log_sanction(after.guild, embed)
 
 @bot.event
 async def on_ready():
