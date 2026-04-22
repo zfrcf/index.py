@@ -13,28 +13,57 @@ from discord.ext import commands, tasks
 # =========================================================
 
 TOKEN = os.getenv("TOKEN")
-
 if not TOKEN:
     raise RuntimeError("La variable d'environnement TOKEN est introuvable.")
 
 GUILD_ID = 1336409517298286612
 
-# Giveaway
-GIVEAWAY_PANEL_CHANNEL_ID = 1496178317739556994
+# =========================
+# GIVEAWAYS
+# =========================
+
+# Salon STAFF où seul le staff voit le bouton "Créer un giveaway"
+GIVEAWAY_STAFF_PANEL_CHANNEL_ID = 1496178317739556994
+
+# Salon PUBLIC où les giveaways sont envoyés pour participation
+GIVEAWAY_PUBLIC_CHANNEL_ID = 1496178317739556994
+
+# Rôle autorisé à créer / reroll les giveaways
 GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644
 
-# Tickets
+# =========================
+# TICKETS
+# =========================
+
 TICKET_PANEL_CHANNEL_ID = 1496178317739556994
 TICKET_CATEGORY_ID = 1496178590080040960
 TICKET_STAFF_ROLE_ID = 1496179072005443644
 TICKET_LOG_CHANNEL_ID = 1496178736217854002
 
-# Vérification
+# =========================
+# VERIFY / CAPTCHA
+# =========================
+
 VERIFY_CHANNEL_ID = 1496179758969651390
 UNVERIFIED_ROLE_ID = 1496179992651104506
 VERIFIED_ROLE_ID = 1496179832717836368
 
-# Fichiers
+VERIFY_TIMEOUT_SECONDS = 300
+AUTO_KICK_UNVERIFIED = True
+MAX_VERIFY_TRIES = 3
+
+# =========================
+# SERVER STATS
+# =========================
+
+ALL_MEMBERS_CHANNEL_ID = 0
+MEMBERS_CHANNEL_ID = 0
+BOTS_CHANNEL_ID = 0
+
+# =========================
+# FILES
+# =========================
+
 DATA_DIR = "bot_data"
 GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
 TICKETS_FILE = os.path.join(DATA_DIR, "tickets.json")
@@ -46,17 +75,14 @@ VERIFY_FILE = os.path.join(DATA_DIR, "verify.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-
 def ensure_file(path, default):
     if not os.path.exists(path):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(default, f, indent=4, ensure_ascii=False)
 
-
-ensure_file(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+ensure_file(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
 ensure_file(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
 ensure_file(VERIFY_FILE, {"users": {}, "panel_message_id": None})
-
 
 def load_json(path, default=None):
     try:
@@ -65,36 +91,28 @@ def load_json(path, default=None):
     except Exception:
         return default if default is not None else {}
 
-
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-
 def now_utc():
     return datetime.now(timezone.utc)
-
 
 def dt_to_iso(dt: datetime):
     return dt.isoformat()
 
-
 def iso_to_dt(value: str):
     return datetime.fromisoformat(value)
-
 
 def ts_full(dt: datetime):
     return f"<t:{int(dt.timestamp())}:F>"
 
-
 def ts_relative(dt: datetime):
     return f"<t:{int(dt.timestamp())}:R>"
-
 
 def random_code(length=6):
     chars = string.ascii_uppercase + string.digits
     return "".join(random.choice(chars) for _ in range(length))
-
 
 def sanitize_channel_name(text: str) -> str:
     text = text.lower().replace(" ", "-")
@@ -102,6 +120,9 @@ def sanitize_channel_name(text: str) -> str:
     text = "".join(c for c in text if c in allowed)
     return text[:80] if text else "ticket"
 
+# =========================================================
+# BOT
+# =========================================================
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -115,29 +136,23 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # HELPERS
 # =========================================================
 
-
 def has_role(member: discord.Member, role_id: int) -> bool:
     return any(role.id == role_id for role in member.roles)
-
 
 def is_giveaway_staff(member: discord.Member) -> bool:
     return has_role(member, GIVEAWAY_ALLOWED_ROLE_ID) or member.guild_permissions.administrator
 
-
 def is_ticket_staff(member: discord.Member) -> bool:
     return has_role(member, TICKET_STAFF_ROLE_ID) or member.guild_permissions.administrator
 
-
 def is_verified(member: discord.Member) -> bool:
     return has_role(member, VERIFIED_ROLE_ID)
-
 
 async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
     try:
         return await channel.fetch_message(message_id)
     except Exception:
         return None
-
 
 async def log_ticket_action(guild: discord.Guild, content: str):
     channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
@@ -148,9 +163,8 @@ async def log_ticket_action(guild: discord.Guild, content: str):
             pass
 
 # =========================================================
-# GIVEAWAY
+# GIVEAWAYS
 # =========================================================
-
 
 class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
     prize = discord.ui.TextInput(
@@ -174,7 +188,10 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
             return await interaction.response.send_message("Action invalide.", ephemeral=True)
 
         if not is_giveaway_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Seuls les modérateurs peuvent créer un giveaway.",
+                ephemeral=True
+            )
 
         try:
             duration = int(str(self.duration_minutes))
@@ -188,6 +205,13 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
         if duration <= 0 or winners <= 0:
             return await interaction.response.send_message(
                 "Les valeurs doivent être supérieures à 0.",
+                ephemeral=True
+            )
+
+        public_channel = interaction.guild.get_channel(GIVEAWAY_PUBLIC_CHANNEL_ID)
+        if not isinstance(public_channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "Le salon public giveaway est introuvable.",
                 ephemeral=True
             )
 
@@ -205,12 +229,12 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
         )
         embed.set_footer(text=f"Créé par {interaction.user}")
 
-        msg = await interaction.channel.send(embed=embed, view=GiveawayJoinView())
+        msg = await public_channel.send(embed=embed, view=GiveawayJoinView())
 
-        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
         data["giveaways"][str(msg.id)] = {
             "guild_id": interaction.guild.id,
-            "channel_id": interaction.channel.id,
+            "channel_id": public_channel.id,
             "message_id": msg.id,
             "prize": str(self.prize),
             "winners_count": winners,
@@ -222,10 +246,12 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
         }
         save_json(GIVEAWAYS_FILE, data)
 
-        await interaction.response.send_message(f"Giveaway créé : {msg.jump_url}", ephemeral=True)
+        await interaction.response.send_message(
+            f"Giveaway créé dans {public_channel.mention}",
+            ephemeral=True
+        )
 
-
-class GiveawayPanelView(discord.ui.View):
+class GiveawayStaffPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -233,17 +259,19 @@ class GiveawayPanelView(discord.ui.View):
         label="Créer un giveaway",
         emoji="🎉",
         style=discord.ButtonStyle.success,
-        custom_id="giveaway_panel_create"
+        custom_id="giveaway_staff_create"
     )
     async def create_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Action invalide.", ephemeral=True)
 
         if not is_giveaway_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Seuls les modérateurs peuvent créer un giveaway.",
+                ephemeral=True
+            )
 
         await interaction.response.send_modal(GiveawayCreateModal())
-
 
 class GiveawayJoinView(discord.ui.View):
     def __init__(self):
@@ -256,7 +284,7 @@ class GiveawayJoinView(discord.ui.View):
         custom_id="giveaway_join_button"
     )
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
         giveaway = data["giveaways"].get(str(interaction.message.id))
 
         if not giveaway:
@@ -265,15 +293,13 @@ class GiveawayJoinView(discord.ui.View):
         if giveaway["ended"]:
             return await interaction.response.send_message("Ce giveaway est terminé.", ephemeral=True)
 
-        user_id = interaction.user.id
-        if user_id in giveaway["participants"]:
+        if interaction.user.id in giveaway["participants"]:
             return await interaction.response.send_message("Tu participes déjà.", ephemeral=True)
 
-        giveaway["participants"].append(user_id)
+        giveaway["participants"].append(interaction.user.id)
         save_json(GIVEAWAYS_FILE, data)
 
         await interaction.response.send_message("Participation enregistrée. 🎉", ephemeral=True)
-
 
 class GiveawayEndedView(discord.ui.View):
     def __init__(self):
@@ -292,7 +318,7 @@ class GiveawayEndedView(discord.ui.View):
         if not is_giveaway_staff(interaction.user):
             return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
 
-        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
         giveaway = data["giveaways"].get(str(interaction.message.id))
 
         if not giveaway:
@@ -314,9 +340,8 @@ class GiveawayEndedView(discord.ui.View):
         )
         await interaction.response.send_message("Reroll effectué.", ephemeral=True)
 
-
 async def finish_giveaway(message_id: str):
-    data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+    data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
     giveaway = data["giveaways"].get(message_id)
 
     if not giveaway or giveaway["ended"]:
@@ -360,14 +385,12 @@ async def finish_giveaway(message_id: str):
             pass
 
     await channel.send(
-        f"🎉 Giveaway terminé pour **{giveaway['prize']}**\n"
-        f"Gagnant(s) : {winner_mentions}"
+        f"🎉 Giveaway terminé pour **{giveaway['prize']}**\nGagnant(s) : {winner_mentions}"
     )
-
 
 @tasks.loop(seconds=15)
 async def giveaway_watcher():
-    data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+    data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
     current = now_utc()
 
     for message_id, giveaway in list(data["giveaways"].items()):
@@ -385,7 +408,6 @@ async def giveaway_watcher():
 # =========================================================
 # TICKETS
 # =========================================================
-
 
 class TicketOpenView(discord.ui.View):
     def __init__(self):
@@ -463,10 +485,7 @@ class TicketOpenView(discord.ui.View):
 
         embed = discord.Embed(
             title="🎫 Ticket ouvert",
-            description=(
-                f"Bonjour {member.mention}, expose ton problème ici.\n\n"
-                f"Le staff va te répondre."
-            ),
+            description=f"Bonjour {member.mention}, explique ton problème ici.",
             color=discord.Color.green()
         )
 
@@ -478,7 +497,6 @@ class TicketOpenView(discord.ui.View):
 
         await log_ticket_action(guild, f"📂 Ticket créé : {channel.mention} par {member.mention}")
         await interaction.response.send_message(f"Ticket créé : {channel.mention}", ephemeral=True)
-
 
 class AddUserModal(discord.ui.Modal, title="Ajouter un membre au ticket"):
     user_id_input = discord.ui.TextInput(
@@ -521,12 +539,8 @@ class AddUserModal(discord.ui.Modal, title="Ajouter un membre au ticket"):
             info["members_added"].append(user_id)
             save_json(TICKETS_FILE, tdata)
 
-        await log_ticket_action(
-            interaction.guild,
-            f"➕ {member.mention} ajouté à {channel.mention} par {interaction.user.mention}"
-        )
+        await log_ticket_action(interaction.guild, f"➕ {member.mention} ajouté à {channel.mention} par {interaction.user.mention}")
         await interaction.response.send_message(f"{member.mention} a été ajouté.", ephemeral=True)
-
 
 class RemoveUserModal(discord.ui.Modal, title="Retirer un membre du ticket"):
     user_id_input = discord.ui.TextInput(
@@ -565,12 +579,8 @@ class RemoveUserModal(discord.ui.Modal, title="Retirer un membre du ticket"):
             info["members_added"].remove(user_id)
             save_json(TICKETS_FILE, tdata)
 
-        await log_ticket_action(
-            interaction.guild,
-            f"➖ {member.mention} retiré de {channel.mention} par {interaction.user.mention}"
-        )
+        await log_ticket_action(interaction.guild, f"➖ {member.mention} retiré de {channel.mention} par {interaction.user.mention}")
         await interaction.response.send_message(f"{member.mention} a été retiré.", ephemeral=True)
-
 
 async def build_transcript_file(channel: discord.TextChannel) -> str:
     path = os.path.join(DATA_DIR, f"transcript_{channel.id}.txt")
@@ -589,19 +599,14 @@ async def build_transcript_file(channel: discord.TextChannel) -> str:
 
     return path
 
-
 async def export_transcript(channel: discord.TextChannel, guild: discord.Guild):
     path = await build_transcript_file(channel)
     log_channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
     if isinstance(log_channel, discord.TextChannel):
         try:
-            await log_channel.send(
-                content=f"📄 Transcript de #{channel.name}",
-                file=discord.File(path)
-            )
+            await log_channel.send(content=f"📄 Transcript de #{channel.name}", file=discord.File(path))
         except Exception:
             pass
-
 
 class TicketManageView(discord.ui.View):
     def __init__(self):
@@ -623,7 +628,6 @@ class TicketManageView(discord.ui.View):
 
         tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
         info = tdata["tickets"].get(str(interaction.channel.id))
-
         if not info:
             return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
 
@@ -640,10 +644,7 @@ class TicketManageView(discord.ui.View):
         tdata["tickets"].pop(str(interaction.channel.id), None)
         save_json(TICKETS_FILE, tdata)
 
-        await log_ticket_action(
-            interaction.guild,
-            f"🗑️ Ticket fermé : #{interaction.channel.name} par {interaction.user.mention}"
-        )
+        await log_ticket_action(interaction.guild, f"🗑️ Ticket fermé : #{interaction.channel.name} par {interaction.user.mention}")
         await interaction.channel.delete(reason=f"Ticket fermé par {interaction.user}")
 
     @discord.ui.button(
@@ -662,7 +663,6 @@ class TicketManageView(discord.ui.View):
 
         tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
         info = tdata["tickets"].get(str(interaction.channel.id))
-
         if not info:
             return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
 
@@ -671,11 +671,7 @@ class TicketManageView(discord.ui.View):
             return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
 
         file_path = await build_transcript_file(interaction.channel)
-        await interaction.response.send_message(
-            "Transcript généré.",
-            file=discord.File(file_path),
-            ephemeral=True
-        )
+        await interaction.response.send_message("Transcript généré.", file=discord.File(file_path), ephemeral=True)
 
     @discord.ui.button(
         label="Ajouter",
@@ -716,13 +712,12 @@ class TicketManageView(discord.ui.View):
         await interaction.response.send_modal(RemoveUserModal(interaction.channel.id))
 
 # =========================================================
-# CAPTCHA / VERIFY
+# VERIFY / CAPTCHA
 # =========================================================
 
-
-class VerifyCaptchaModal(discord.ui.Modal, title="Entrer le captcha"):
+class VerifyCaptchaModal(discord.ui.Modal, title="Vérification du serveur"):
     captcha_input = discord.ui.TextInput(
-        label="Recopie le code",
+        label="Recopie le captcha",
         placeholder="Exemple : A1B2C3",
         max_length=12
     )
@@ -735,25 +730,44 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Entrer le captcha"):
         entry = vdata["users"].get(str(interaction.user.id))
 
         if not entry:
-            return await interaction.response.send_message(
-                "Aucun captcha en attente. Recommence la vérification.",
-                ephemeral=True
-            )
+            return await interaction.response.send_message("Aucune vérification en attente.", ephemeral=True)
 
-        expected = entry["captcha"]
+        expected = entry["captcha"].strip().upper()
         given = str(self.captcha_input).strip().upper()
 
         if given != expected:
-            new_code = random_code()
-            entry["captcha"] = new_code
-            entry["verified"] = False
+            entry["tries"] = entry.get("tries", 0) + 1
+            entry["captcha"] = random_code()
             entry["updated_at"] = dt_to_iso(now_utc())
             save_json(VERIFY_FILE, vdata)
 
+            tries_left = max(0, MAX_VERIFY_TRIES - entry["tries"])
+
+            if tries_left <= 0:
+                try:
+                    await interaction.guild.kick(interaction.user, reason="Captcha incorrect trop de fois")
+                except Exception:
+                    pass
+
+                return await interaction.response.send_message(
+                    "Captcha incorrect trop de fois. Expulsion.",
+                    ephemeral=True
+                )
+
+            embed = discord.Embed(
+                title="❌ Captcha incorrect",
+                description=(
+                    f"Il te reste **{tries_left} essai(s)**.\n"
+                    f"**Nouveau captcha :** `{entry['captcha']}`"
+                ),
+                color=discord.Color.red()
+            )
+            embed.set_footer(text="Clique sur Réessayer pour entrer le nouveau code.")
+
             return await interaction.response.send_message(
-                f"Captcha incorrect.\nNouveau code : `{new_code}`\nClique ensuite sur **Entrer le code**.",
+                embed=embed,
                 ephemeral=True,
-                view=VerifyCodeEntryView()
+                view=VerifyRetryView()
             )
 
         guild = interaction.guild
@@ -775,29 +789,28 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Entrer le captcha"):
         entry["updated_at"] = dt_to_iso(now_utc())
         save_json(VERIFY_FILE, vdata)
 
-        await interaction.response.send_message("✅ Vérification réussie. Bienvenue !", ephemeral=True)
+        embed = discord.Embed(
+            title="✅ Vérification réussie",
+            description="Bienvenue sur le serveur. Tu as maintenant accès aux salons.",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-class VerifyCodeEntryView(discord.ui.View):
+class VerifyRetryView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
 
-    @discord.ui.button(
-        label="Entrer le code",
-        emoji="✍️",
-        style=discord.ButtonStyle.primary
-    )
-    async def enter_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Réessayer", emoji="🔁", style=discord.ButtonStyle.primary)
+    async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(VerifyCaptchaModal())
-
 
 class VerifyPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Me vérifier",
-        emoji="✅",
+        label="Commencer la vérification",
+        emoji="🛡️",
         style=discord.ButtonStyle.success,
         custom_id="verify_open_button"
     )
@@ -814,37 +827,125 @@ class VerifyPanelView(discord.ui.View):
         vdata["users"][str(interaction.user.id)] = {
             "captcha": code,
             "verified": False,
+            "tries": 0,
+            "created_at": dt_to_iso(now_utc()),
             "updated_at": dt_to_iso(now_utc())
         }
         save_json(VERIFY_FILE, vdata)
 
-        await interaction.response.send_message(
-            f"Ton code captcha est : `{code}`\nClique sur **Entrer le code** pour le saisir.",
-            ephemeral=True,
-            view=VerifyCodeEntryView()
+        embed = discord.Embed(
+            title=f"Bienvenue sur {interaction.guild.name}",
+            description=(
+                "Pour accéder au serveur, complète le captcha avec **6 caractères majuscules**.\n\n"
+                f"**Captcha :** `{code}`\n"
+                f"**Expiration automatique :** dans 5 minutes\n"
+                f"**Essais max :** {MAX_VERIFY_TRIES}"
+            ),
+            color=discord.Color.orange()
         )
+        embed.set_footer(text="Clique sur le bouton ci-dessous pour entrer le code.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True, view=VerifyRetryView())
+
+@tasks.loop(seconds=30)
+async def verify_timeout_watcher():
+    if not AUTO_KICK_UNVERIFIED:
+        return
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+
+    vdata = load_json(VERIFY_FILE, {"users": {}, "panel_message_id": None})
+    changed = False
+    current_time = now_utc()
+
+    for user_id, entry in list(vdata["users"].items()):
+        if entry.get("verified"):
+            continue
+
+        created_at_raw = entry.get("created_at") or entry.get("updated_at")
+        if not created_at_raw:
+            continue
+
+        try:
+            created_at = iso_to_dt(created_at_raw)
+        except Exception:
+            continue
+
+        if (current_time - created_at).total_seconds() >= VERIFY_TIMEOUT_SECONDS:
+            member = guild.get_member(int(user_id))
+            if member:
+                try:
+                    await guild.kick(member, reason="Non vérifié après 5 minutes")
+                except Exception:
+                    pass
+
+            vdata["users"].pop(user_id, None)
+            changed = True
+
+    if changed:
+        save_json(VERIFY_FILE, vdata)
+
+# =========================================================
+# SERVER STATS
+# =========================================================
+
+async def update_server_stats_once():
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+
+    all_members = guild.member_count or 0
+    humans = len([m for m in guild.members if not m.bot])
+    bots_count = len([m for m in guild.members if m.bot])
+
+    all_channel = guild.get_channel(ALL_MEMBERS_CHANNEL_ID)
+    members_channel = guild.get_channel(MEMBERS_CHANNEL_ID)
+    bots_channel = guild.get_channel(BOTS_CHANNEL_ID)
+
+    try:
+        if all_channel and ALL_MEMBERS_CHANNEL_ID != 0:
+            new_name = f"📊 All Members : {all_members}"
+            if all_channel.name != new_name:
+                await all_channel.edit(name=new_name)
+
+        if members_channel and MEMBERS_CHANNEL_ID != 0:
+            new_name = f"👥 Members : {humans}"
+            if members_channel.name != new_name:
+                await members_channel.edit(name=new_name)
+
+        if bots_channel and BOTS_CHANNEL_ID != 0:
+            new_name = f"🤖 Bots : {bots_count}"
+            if bots_channel.name != new_name:
+                await bots_channel.edit(name=new_name)
+    except Exception as e:
+        print("Erreur server stats :", e)
+
+@tasks.loop(minutes=1)
+async def update_server_stats_loop():
+    await update_server_stats_once()
 
 # =========================================================
 # PANELS
 # =========================================================
 
-
 async def ensure_panel(channel: discord.TextChannel, kind: str):
-    if kind == "giveaway":
-        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
-        message_id = data.get("panel_message_id")
+    if kind == "giveaway_staff":
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "staff_panel_message_id": None})
+        message_id = data.get("staff_panel_message_id")
         if message_id:
             msg = await safe_fetch_message(channel, message_id)
             if msg:
                 return
 
         embed = discord.Embed(
-            title="🎉 Giveaway",
-            description="Clique sur le bouton ci-dessous pour créer un giveaway.",
+            title="🎉 Giveaway Staff",
+            description="Bouton réservé aux modérateurs pour créer un giveaway.",
             color=discord.Color.blurple()
         )
-        msg = await channel.send(embed=embed, view=GiveawayPanelView())
-        data["panel_message_id"] = msg.id
+        msg = await channel.send(embed=embed, view=GiveawayStaffPanelView())
+        data["staff_panel_message_id"] = msg.id
         save_json(GIVEAWAYS_FILE, data)
 
     elif kind == "ticket":
@@ -885,7 +986,6 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
 # EVENTS
 # =========================================================
 
-
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild.id != GUILD_ID:
@@ -902,16 +1002,25 @@ async def on_member_join(member: discord.Member):
     vdata["users"][str(member.id)] = {
         "captcha": random_code(),
         "verified": False,
+        "tries": 0,
+        "created_at": dt_to_iso(now_utc()),
         "updated_at": dt_to_iso(now_utc())
     }
     save_json(VERIFY_FILE, vdata)
 
+    await update_server_stats_once()
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    if member.guild.id != GUILD_ID:
+        return
+    await update_server_stats_once()
 
 @bot.event
 async def on_ready():
     print(f"Connecté en tant que {bot.user} ({bot.user.id})")
 
-    bot.add_view(GiveawayPanelView())
+    bot.add_view(GiveawayStaffPanelView())
     bot.add_view(GiveawayJoinView())
     bot.add_view(GiveawayEndedView())
     bot.add_view(TicketOpenView())
@@ -923,12 +1032,12 @@ async def on_ready():
         print("Serveur introuvable. Vérifie GUILD_ID.")
         return
 
-    giveaway_channel = guild.get_channel(GIVEAWAY_PANEL_CHANNEL_ID)
+    giveaway_staff_channel = guild.get_channel(GIVEAWAY_STAFF_PANEL_CHANNEL_ID)
     ticket_channel = guild.get_channel(TICKET_PANEL_CHANNEL_ID)
     verify_channel = guild.get_channel(VERIFY_CHANNEL_ID)
 
-    if isinstance(giveaway_channel, discord.TextChannel):
-        await ensure_panel(giveaway_channel, "giveaway")
+    if isinstance(giveaway_staff_channel, discord.TextChannel):
+        await ensure_panel(giveaway_staff_channel, "giveaway_staff")
 
     if isinstance(ticket_channel, discord.TextChannel):
         await ensure_panel(ticket_channel, "ticket")
@@ -939,37 +1048,14 @@ async def on_ready():
     if not giveaway_watcher.is_running():
         giveaway_watcher.start()
 
-ALL_MEMBERS_CHANNEL_ID = 1496534691715743854
-HUMANS_CHANNEL_ID = 1496538997323862179
-BOTS_CHANNEL_ID = 1496539148570591252
+    if not verify_timeout_watcher.is_running():
+        verify_timeout_watcher.start()
 
-@tasks.loop(seconds=60)
-async def update_stats():
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
+    if not update_server_stats_loop.is_running():
+        update_server_stats_loop.start()
 
-    all_members = guild.member_count
-    humans = len([m for m in guild.members if not m.bot])
-    bots = len([m for m in guild.members if m.bot])
+    await update_server_stats_once()
 
-    try:
-        all_channel = guild.get_channel(ALL_MEMBERS_CHANNEL_ID)
-        human_channel = guild.get_channel(HUMANS_CHANNEL_ID)
-        bot_channel = guild.get_channel(BOTS_CHANNEL_ID)
-
-        if all_channel:
-            await all_channel.edit(name=f"📊 All Members : {all_members}")
-
-        if human_channel:
-            await human_channel.edit(name=f"👤 Members : {humans}")
-
-        if bot_channel:
-            await bot_channel.edit(name=f"🤖 Bots : {bots}")
-
-    except Exception as e:
-        print("Erreur stats:", e)
-        
 # =========================================================
 # START
 # =========================================================
