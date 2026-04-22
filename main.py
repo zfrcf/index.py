@@ -1,11 +1,12 @@
-import discord
-from discord.ext import commands, tasks
-import asyncio
-import json
 import os
+import json
+import asyncio
 import random
 import string
 from datetime import datetime, timedelta, timezone
+
+import discord
+from discord.ext import commands, tasks
 
 # =========================================================
 # CONFIG
@@ -13,19 +14,22 @@ from datetime import datetime, timedelta, timezone
 
 TOKEN = os.getenv("TOKEN")
 
+if not TOKEN:
+    raise RuntimeError("La variable d'environnement TOKEN est introuvable.")
+
 GUILD_ID = 1336409517298286612
 
 # Giveaway
 GIVEAWAY_PANEL_CHANNEL_ID = 1496178317739556994
-GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644  # rôle staff autorisé à créer / reroll
+GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644
 
 # Tickets
 TICKET_PANEL_CHANNEL_ID = 1496178317739556994
 TICKET_CATEGORY_ID = 1496178590080040960
 TICKET_STAFF_ROLE_ID = 1496179072005443644
-TICKET_LOG_CHANNEL_ID = 1496178736217854002  # logs + transcript txt
+TICKET_LOG_CHANNEL_ID = 1496178736217854002
 
-# Captcha / vérification
+# Vérification
 VERIFY_CHANNEL_ID = 1496179758969651390
 UNVERIFIED_ROLE_ID = 1496179992651104506
 VERIFIED_ROLE_ID = 1496179832717836368
@@ -42,41 +46,62 @@ VERIFY_FILE = os.path.join(DATA_DIR, "verify.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
+
 def ensure_file(path, default):
     if not os.path.exists(path):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(default, f, indent=4, ensure_ascii=False)
 
+
 ensure_file(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
 ensure_file(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
 ensure_file(VERIFY_FILE, {"users": {}, "panel_message_id": None})
 
-def load_json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+def load_json(path, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default if default is not None else {}
+
 
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
+
 def now_utc():
     return datetime.now(timezone.utc)
+
 
 def dt_to_iso(dt: datetime):
     return dt.isoformat()
 
+
 def iso_to_dt(value: str):
     return datetime.fromisoformat(value)
+
 
 def ts_full(dt: datetime):
     return f"<t:{int(dt.timestamp())}:F>"
 
+
 def ts_relative(dt: datetime):
     return f"<t:{int(dt.timestamp())}:R>"
+
 
 def random_code(length=6):
     chars = string.ascii_uppercase + string.digits
     return "".join(random.choice(chars) for _ in range(length))
+
+
+def sanitize_channel_name(text: str) -> str:
+    text = text.lower().replace(" ", "-")
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789-_"
+    text = "".join(c for c in text if c in allowed)
+    return text[:80] if text else "ticket"
+
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -90,20 +115,29 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # HELPERS
 # =========================================================
 
+
 def has_role(member: discord.Member, role_id: int) -> bool:
     return any(role.id == role_id for role in member.roles)
+
 
 def is_giveaway_staff(member: discord.Member) -> bool:
     return has_role(member, GIVEAWAY_ALLOWED_ROLE_ID) or member.guild_permissions.administrator
 
+
 def is_ticket_staff(member: discord.Member) -> bool:
     return has_role(member, TICKET_STAFF_ROLE_ID) or member.guild_permissions.administrator
+
+
+def is_verified(member: discord.Member) -> bool:
+    return has_role(member, VERIFIED_ROLE_ID)
+
 
 async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
     try:
         return await channel.fetch_message(message_id)
     except Exception:
         return None
+
 
 async def log_ticket_action(guild: discord.Guild, content: str):
     channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
@@ -113,15 +147,10 @@ async def log_ticket_action(guild: discord.Guild, content: str):
         except Exception:
             pass
 
-def sanitize_channel_name(text: str) -> str:
-    text = text.lower().replace(" ", "-")
-    allowed = "abcdefghijklmnopqrstuvwxyz0123456789-_"
-    text = "".join(c for c in text if c in allowed)
-    return text[:80] if text else "ticket"
-
 # =========================================================
 # GIVEAWAY
 # =========================================================
+
 
 class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
     prize = discord.ui.TextInput(
@@ -151,10 +180,16 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
             duration = int(str(self.duration_minutes))
             winners = int(str(self.winners_count))
         except ValueError:
-            return await interaction.response.send_message("Durée et gagnants doivent être numériques.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Durée et nombre de gagnants doivent être des nombres.",
+                ephemeral=True
+            )
 
         if duration <= 0 or winners <= 0:
-            return await interaction.response.send_message("Les valeurs doivent être supérieures à 0.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Les valeurs doivent être supérieures à 0.",
+                ephemeral=True
+            )
 
         end_at = now_utc() + timedelta(minutes=duration)
 
@@ -172,7 +207,7 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
 
         msg = await interaction.channel.send(embed=embed, view=GiveawayJoinView())
 
-        data = load_json(GIVEAWAYS_FILE)
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
         data["giveaways"][str(msg.id)] = {
             "guild_id": interaction.guild.id,
             "channel_id": interaction.channel.id,
@@ -182,11 +217,13 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
             "end_at": dt_to_iso(end_at),
             "ended": False,
             "participants": [],
-            "created_by": interaction.user.id
+            "created_by": interaction.user.id,
+            "winner_ids": []
         }
         save_json(GIVEAWAYS_FILE, data)
 
         await interaction.response.send_message(f"Giveaway créé : {msg.jump_url}", ephemeral=True)
+
 
 class GiveawayPanelView(discord.ui.View):
     def __init__(self):
@@ -207,6 +244,7 @@ class GiveawayPanelView(discord.ui.View):
 
         await interaction.response.send_modal(GiveawayCreateModal())
 
+
 class GiveawayJoinView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -218,7 +256,7 @@ class GiveawayJoinView(discord.ui.View):
         custom_id="giveaway_join_button"
     )
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = load_json(GIVEAWAYS_FILE)
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
         giveaway = data["giveaways"].get(str(interaction.message.id))
 
         if not giveaway:
@@ -236,10 +274,10 @@ class GiveawayJoinView(discord.ui.View):
 
         await interaction.response.send_message("Participation enregistrée. 🎉", ephemeral=True)
 
-class GiveawayResultView(discord.ui.View):
-    def __init__(self, giveaway_message_id: int):
+
+class GiveawayEndedView(discord.ui.View):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.giveaway_message_id = giveaway_message_id
 
     @discord.ui.button(
         label="Reroll",
@@ -254,8 +292,8 @@ class GiveawayResultView(discord.ui.View):
         if not is_giveaway_staff(interaction.user):
             return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
 
-        data = load_json(GIVEAWAYS_FILE)
-        giveaway = data["giveaways"].get(str(self.giveaway_message_id))
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+        giveaway = data["giveaways"].get(str(interaction.message.id))
 
         if not giveaway:
             return await interaction.response.send_message("Giveaway introuvable.", ephemeral=True)
@@ -266,6 +304,9 @@ class GiveawayResultView(discord.ui.View):
 
         winners_count = min(giveaway["winners_count"], len(participants))
         winners = random.sample(participants, winners_count)
+        giveaway["winner_ids"] = winners
+        save_json(GIVEAWAYS_FILE, data)
+
         mentions = ", ".join(f"<@{uid}>" for uid in winners)
 
         await interaction.channel.send(
@@ -273,8 +314,9 @@ class GiveawayResultView(discord.ui.View):
         )
         await interaction.response.send_message("Reroll effectué.", ephemeral=True)
 
+
 async def finish_giveaway(message_id: str):
-    data = load_json(GIVEAWAYS_FILE)
+    data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
     giveaway = data["giveaways"].get(message_id)
 
     if not giveaway or giveaway["ended"]:
@@ -313,7 +355,7 @@ async def finish_giveaway(message_id: str):
 
     if message:
         try:
-            await message.edit(embed=embed, view=GiveawayResultView(giveaway["message_id"]))
+            await message.edit(embed=embed, view=GiveawayEndedView())
         except Exception:
             pass
 
@@ -322,22 +364,28 @@ async def finish_giveaway(message_id: str):
         f"Gagnant(s) : {winner_mentions}"
     )
 
+
 @tasks.loop(seconds=15)
 async def giveaway_watcher():
-    data = load_json(GIVEAWAYS_FILE)
+    data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
     current = now_utc()
 
     for message_id, giveaway in list(data["giveaways"].items()):
-        if giveaway["ended"]:
+        if giveaway.get("ended"):
             continue
 
-        end_at = iso_to_dt(giveaway["end_at"])
+        try:
+            end_at = iso_to_dt(giveaway["end_at"])
+        except Exception:
+            continue
+
         if current >= end_at:
             await finish_giveaway(message_id)
 
 # =========================================================
 # TICKETS
 # =========================================================
+
 
 class TicketOpenView(discord.ui.View):
     def __init__(self):
@@ -353,10 +401,15 @@ class TicketOpenView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Action invalide.", ephemeral=True)
 
+        if not is_verified(interaction.user):
+            return await interaction.response.send_message(
+                "Tu dois être vérifié avant d'ouvrir un ticket.",
+                ephemeral=True
+            )
+
         guild = interaction.guild
         member = interaction.user
-
-        tdata = load_json(TICKETS_FILE)
+        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
 
         for channel_id, info in tdata["tickets"].items():
             if info["guild_id"] == guild.id and info["owner_id"] == member.id:
@@ -378,11 +431,16 @@ class TicketOpenView(discord.ui.View):
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             member: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True,
-                attach_files=True, embed_links=True
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True
             ),
             staff_role: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True,
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
                 manage_channels=True
             )
         }
@@ -421,6 +479,7 @@ class TicketOpenView(discord.ui.View):
         await log_ticket_action(guild, f"📂 Ticket créé : {channel.mention} par {member.mention}")
         await interaction.response.send_message(f"Ticket créé : {channel.mention}", ephemeral=True)
 
+
 class AddUserModal(discord.ui.Modal, title="Ajouter un membre au ticket"):
     user_id_input = discord.ui.TextInput(
         label="ID utilisateur",
@@ -456,14 +515,18 @@ class AddUserModal(discord.ui.Modal, title="Ajouter un membre au ticket"):
         overwrite.read_message_history = True
         await channel.set_permissions(member, overwrite=overwrite)
 
-        tdata = load_json(TICKETS_FILE)
+        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
         info = tdata["tickets"].get(str(channel.id))
         if info and user_id not in info["members_added"]:
             info["members_added"].append(user_id)
             save_json(TICKETS_FILE, tdata)
 
-        await log_ticket_action(interaction.guild, f"➕ {member.mention} ajouté à {channel.mention} par {interaction.user.mention}")
+        await log_ticket_action(
+            interaction.guild,
+            f"➕ {member.mention} ajouté à {channel.mention} par {interaction.user.mention}"
+        )
         await interaction.response.send_message(f"{member.mention} a été ajouté.", ephemeral=True)
+
 
 class RemoveUserModal(discord.ui.Modal, title="Retirer un membre du ticket"):
     user_id_input = discord.ui.TextInput(
@@ -496,101 +559,18 @@ class RemoveUserModal(discord.ui.Modal, title="Retirer un membre du ticket"):
 
         await channel.set_permissions(member, overwrite=None)
 
-        tdata = load_json(TICKETS_FILE)
+        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
         info = tdata["tickets"].get(str(channel.id))
         if info and user_id in info["members_added"]:
             info["members_added"].remove(user_id)
             save_json(TICKETS_FILE, tdata)
 
-        await log_ticket_action(interaction.guild, f"➖ {member.mention} retiré de {channel.mention} par {interaction.user.mention}")
+        await log_ticket_action(
+            interaction.guild,
+            f"➖ {member.mention} retiré de {channel.mention} par {interaction.user.mention}"
+        )
         await interaction.response.send_message(f"{member.mention} a été retiré.", ephemeral=True)
 
-class TicketManageView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Fermer",
-        emoji="🔒",
-        style=discord.ButtonStyle.danger,
-        custom_id="ticket_close_button"
-    )
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
-        tdata = load_json(TICKETS_FILE)
-        info = tdata["tickets"].get(str(interaction.channel.id))
-        if not info:
-            return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
-
-        allowed = interaction.user.id == info["owner_id"] or is_ticket_staff(interaction.user)
-        if not allowed:
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-
-        await interaction.response.send_message("Fermeture du ticket dans 3 secondes...")
-        await asyncio.sleep(3)
-
-        await export_transcript(interaction.channel, interaction.guild)
-
-        tdata = load_json(TICKETS_FILE)
-        tdata["tickets"].pop(str(interaction.channel.id), None)
-        save_json(TICKETS_FILE, tdata)
-
-        await log_ticket_action(interaction.guild, f"🗑️ Ticket fermé : #{interaction.channel.name} par {interaction.user.mention}")
-        await interaction.channel.delete(reason=f"Ticket fermé par {interaction.user}")
-
-    @discord.ui.button(
-        label="Transcript",
-        emoji="📄",
-        style=discord.ButtonStyle.secondary,
-        custom_id="ticket_transcript_button"
-    )
-    async def transcript_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
-        tdata = load_json(TICKETS_FILE)
-        info = tdata["tickets"].get(str(interaction.channel.id))
-        if not info:
-            return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
-
-        allowed = interaction.user.id == info["owner_id"] or is_ticket_staff(interaction.user)
-        if not allowed:
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-
-        file_path = await build_transcript_file(interaction.channel)
-        await interaction.response.send_message("Transcript généré.", file=discord.File(file_path), ephemeral=True)
-
-    @discord.ui.button(
-        label="Ajouter",
-        emoji="➕",
-        style=discord.ButtonStyle.primary,
-        custom_id="ticket_add_user_button"
-    )
-    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
-        if not is_ticket_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-
-        await interaction.response.send_modal(AddUserModal(interaction.channel.id))
-
-    @discord.ui.button(
-        label="Retirer",
-        emoji="➖",
-        style=discord.ButtonStyle.secondary,
-        custom_id="ticket_remove_user_button"
-    )
-    async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
-        if not is_ticket_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-
-        await interaction.response.send_modal(RemoveUserModal(interaction.channel.id))
 
 async def build_transcript_file(channel: discord.TextChannel) -> str:
     path = os.path.join(DATA_DIR, f"transcript_{channel.id}.txt")
@@ -609,6 +589,7 @@ async def build_transcript_file(channel: discord.TextChannel) -> str:
 
     return path
 
+
 async def export_transcript(channel: discord.TextChannel, guild: discord.Guild):
     path = await build_transcript_file(channel)
     log_channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
@@ -621,11 +602,125 @@ async def export_transcript(channel: discord.TextChannel, guild: discord.Guild):
         except Exception:
             pass
 
+
+class TicketManageView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Fermer",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_close_button"
+    )
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (
+            not interaction.guild
+            or not isinstance(interaction.user, discord.Member)
+            or not isinstance(interaction.channel, discord.TextChannel)
+        ):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
+        info = tdata["tickets"].get(str(interaction.channel.id))
+
+        if not info:
+            return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
+
+        allowed = interaction.user.id == info["owner_id"] or is_ticket_staff(interaction.user)
+        if not allowed:
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_message("Fermeture du ticket dans 3 secondes...")
+        await asyncio.sleep(3)
+
+        await export_transcript(interaction.channel, interaction.guild)
+
+        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
+        tdata["tickets"].pop(str(interaction.channel.id), None)
+        save_json(TICKETS_FILE, tdata)
+
+        await log_ticket_action(
+            interaction.guild,
+            f"🗑️ Ticket fermé : #{interaction.channel.name} par {interaction.user.mention}"
+        )
+        await interaction.channel.delete(reason=f"Ticket fermé par {interaction.user}")
+
+    @discord.ui.button(
+        label="Transcript",
+        emoji="📄",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ticket_transcript_button"
+    )
+    async def transcript_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (
+            not interaction.guild
+            or not isinstance(interaction.user, discord.Member)
+            or not isinstance(interaction.channel, discord.TextChannel)
+        ):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
+        info = tdata["tickets"].get(str(interaction.channel.id))
+
+        if not info:
+            return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
+
+        allowed = interaction.user.id == info["owner_id"] or is_ticket_staff(interaction.user)
+        if not allowed:
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        file_path = await build_transcript_file(interaction.channel)
+        await interaction.response.send_message(
+            "Transcript généré.",
+            file=discord.File(file_path),
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Ajouter",
+        emoji="➕",
+        style=discord.ButtonStyle.primary,
+        custom_id="ticket_add_user_button"
+    )
+    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (
+            not interaction.guild
+            or not isinstance(interaction.user, discord.Member)
+            or not isinstance(interaction.channel, discord.TextChannel)
+        ):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_ticket_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_modal(AddUserModal(interaction.channel.id))
+
+    @discord.ui.button(
+        label="Retirer",
+        emoji="➖",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ticket_remove_user_button"
+    )
+    async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (
+            not interaction.guild
+            or not isinstance(interaction.user, discord.Member)
+            or not isinstance(interaction.channel, discord.TextChannel)
+        ):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_ticket_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_modal(RemoveUserModal(interaction.channel.id))
+
 # =========================================================
 # CAPTCHA / VERIFY
 # =========================================================
 
-class VerifyCaptchaModal(discord.ui.Modal, title="Vérification captcha"):
+
+class VerifyCaptchaModal(discord.ui.Modal, title="Entrer le captcha"):
     captcha_input = discord.ui.TextInput(
         label="Recopie le code",
         placeholder="Exemple : A1B2C3",
@@ -636,20 +731,29 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Vérification captcha"):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Action invalide.", ephemeral=True)
 
-        vdata = load_json(VERIFY_FILE)
+        vdata = load_json(VERIFY_FILE, {"users": {}, "panel_message_id": None})
         entry = vdata["users"].get(str(interaction.user.id))
 
         if not entry:
-            return await interaction.response.send_message("Aucun captcha en attente. Reclique sur le bouton.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Aucun captcha en attente. Recommence la vérification.",
+                ephemeral=True
+            )
 
         expected = entry["captcha"]
-        if str(self.captcha_input).strip().upper() != expected:
+        given = str(self.captcha_input).strip().upper()
+
+        if given != expected:
             new_code = random_code()
             entry["captcha"] = new_code
+            entry["verified"] = False
+            entry["updated_at"] = dt_to_iso(now_utc())
             save_json(VERIFY_FILE, vdata)
+
             return await interaction.response.send_message(
-                f"Captcha incorrect.\nNouveau code : `{new_code}`",
-                ephemeral=True
+                f"Captcha incorrect.\nNouveau code : `{new_code}`\nClique ensuite sur **Entrer le code**.",
+                ephemeral=True,
+                view=VerifyCodeEntryView()
             )
 
         guild = interaction.guild
@@ -662,14 +766,30 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Vérification captcha"):
         try:
             if unverified_role in interaction.user.roles:
                 await interaction.user.remove_roles(unverified_role, reason="Captcha validé")
-            await interaction.user.add_roles(verified_role, reason="Captcha validé")
+            if verified_role not in interaction.user.roles:
+                await interaction.user.add_roles(verified_role, reason="Captcha validé")
         except Exception:
             return await interaction.response.send_message("Impossible de modifier les rôles.", ephemeral=True)
 
         entry["verified"] = True
+        entry["updated_at"] = dt_to_iso(now_utc())
         save_json(VERIFY_FILE, vdata)
 
         await interaction.response.send_message("✅ Vérification réussie. Bienvenue !", ephemeral=True)
+
+
+class VerifyCodeEntryView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(
+        label="Entrer le code",
+        emoji="✍️",
+        style=discord.ButtonStyle.primary
+    )
+    async def enter_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VerifyCaptchaModal())
+
 
 class VerifyPanelView(discord.ui.View):
     def __init__(self):
@@ -685,7 +805,10 @@ class VerifyPanelView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Action invalide.", ephemeral=True)
 
-        vdata = load_json(VERIFY_FILE)
+        if is_verified(interaction.user):
+            return await interaction.response.send_message("Tu es déjà vérifié.", ephemeral=True)
+
+        vdata = load_json(VERIFY_FILE, {"users": {}, "panel_message_id": None})
         code = random_code()
 
         vdata["users"][str(interaction.user.id)] = {
@@ -696,20 +819,19 @@ class VerifyPanelView(discord.ui.View):
         save_json(VERIFY_FILE, vdata)
 
         await interaction.response.send_message(
-            f"Recopie ce code dans la fenêtre suivante : `{code}`",
-            ephemeral=True
+            f"Ton code captcha est : `{code}`\nClique sur **Entrer le code** pour le saisir.",
+            ephemeral=True,
+            view=VerifyCodeEntryView()
         )
-modal = VerifyCaptchaModal()
-modal.captcha_input.placeholder = f"Recopie ce code : {code}"
-await interaction.response.send_modal(modal)
 
 # =========================================================
 # PANELS
 # =========================================================
 
+
 async def ensure_panel(channel: discord.TextChannel, kind: str):
     if kind == "giveaway":
-        data = load_json(GIVEAWAYS_FILE)
+        data = load_json(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
         message_id = data.get("panel_message_id")
         if message_id:
             msg = await safe_fetch_message(channel, message_id)
@@ -726,7 +848,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
         save_json(GIVEAWAYS_FILE, data)
 
     elif kind == "ticket":
-        data = load_json(TICKETS_FILE)
+        data = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
         message_id = data.get("panel_message_id")
         if message_id:
             msg = await safe_fetch_message(channel, message_id)
@@ -743,7 +865,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
         save_json(TICKETS_FILE, data)
 
     elif kind == "verify":
-        data = load_json(VERIFY_FILE)
+        data = load_json(VERIFY_FILE, {"users": {}, "panel_message_id": None})
         message_id = data.get("panel_message_id")
         if message_id:
             msg = await safe_fetch_message(channel, message_id)
@@ -752,7 +874,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
 
         embed = discord.Embed(
             title="🛡️ Vérification",
-            description="Clique sur le bouton pour lancer le captcha et accéder au serveur.",
+            description="Clique sur le bouton pour lancer la vérification captcha.",
             color=discord.Color.orange()
         )
         msg = await channel.send(embed=embed, view=VerifyPanelView())
@@ -762,6 +884,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
 # =========================================================
 # EVENTS
 # =========================================================
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -775,7 +898,7 @@ async def on_member_join(member: discord.Member):
         except Exception:
             pass
 
-    vdata = load_json(VERIFY_FILE)
+    vdata = load_json(VERIFY_FILE, {"users": {}, "panel_message_id": None})
     vdata["users"][str(member.id)] = {
         "captcha": random_code(),
         "verified": False,
@@ -783,14 +906,14 @@ async def on_member_join(member: discord.Member):
     }
     save_json(VERIFY_FILE, vdata)
 
+
 @bot.event
 async def on_ready():
     print(f"Connecté en tant que {bot.user} ({bot.user.id})")
 
-    # Réenregistrer les vues persistantes
     bot.add_view(GiveawayPanelView())
     bot.add_view(GiveawayJoinView())
-    bot.add_view(GiveawayResultView(0))   # placeholder pour custom_id statique
+    bot.add_view(GiveawayEndedView())
     bot.add_view(TicketOpenView())
     bot.add_view(TicketManageView())
     bot.add_view(VerifyPanelView())
