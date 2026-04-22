@@ -11,6 +11,8 @@ from discord.ext import commands, tasks
 # =========================================================
 # CONFIG
 # =========================================================
+# Logs arrivée / départ
+MEMBER_LOG_CHANNEL_ID = 1496544952161665215
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
