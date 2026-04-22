@@ -699,7 +699,9 @@ class VerifyPanelView(discord.ui.View):
             f"Recopie ce code dans la fenêtre suivante : `{code}`",
             ephemeral=True
         )
-        await interaction.followup.send_modal(VerifyCaptchaModal())
+modal = VerifyCaptchaModal()
+modal.captcha_input.placeholder = f"Recopie ce code : {code}"
+await interaction.response.send_modal(modal)
 
 # =========================================================
 # PANELS
