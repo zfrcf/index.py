@@ -14,6 +14,24 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # CONFIG
 # =========================================================
 
+# =========================
+# SECURITE / RAID
+# =========================
+
+SECURITY_LOG_CHANNEL_ID = 0
+
+# IDs blacklistés de manière permanente
+BLACKLIST_FILE = os.path.join(DATA_DIR, "blacklist.json")
+
+# Anti-raid
+RAID_JOIN_THRESHOLD = 5          # nombre d'arrivées
+RAID_TIME_WINDOW_SECONDS = 15    # en combien de secondes
+RAID_MODE_DURATION = 300         # durée du mode raid en secondes
+
+# Pendant un raid, kick auto des comptes trop récents
+RAID_KICK_RECENT_ACCOUNTS = True
+RAID_MIN_ACCOUNT_AGE_DAYS = 7
+
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise RuntimeError("La variable d'environnement TOKEN est introuvable.")
