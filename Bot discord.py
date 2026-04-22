@@ -1,0 +1,821 @@
+import discord
+from discord.ext import commands, tasks
+import asyncio
+import json
+import os
+import random
+import string
+from datetime import datetime, timedelta, timezone
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+TOKEN = "MTQ5MzY4OTAzNzk0MzQ3MjIzOQ.GjC0XM.EjTBK5VVF-kque8rcCADXgNYoAYjkQUT3dQyB8"
+
+GUILD_ID = 1336409517298286612
+
+# Giveaway
+GIVEAWAY_PANEL_CHANNEL_ID = 1496178317739556994
+GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644  # rôle staff autorisé à créer / reroll
+
+# Tickets
+TICKET_PANEL_CHANNEL_ID = 1496178317739556994
+TICKET_CATEGORY_ID = 1496178590080040960
+TICKET_STAFF_ROLE_ID = 1496179072005443644
+TICKET_LOG_CHANNEL_ID = 1496178736217854002  # logs + transcript txt
+
+# Captcha / vérification
+VERIFY_CHANNEL_ID = 1496179758969651390
+UNVERIFIED_ROLE_ID = 1496179992651104506
+VERIFIED_ROLE_ID = 1496179832717836368
+
+# Fichiers
+DATA_DIR = "bot_data"
+GIVEAWAYS_FILE = os.path.join(DATA_DIR, "giveaways.json")
+TICKETS_FILE = os.path.join(DATA_DIR, "tickets.json")
+VERIFY_FILE = os.path.join(DATA_DIR, "verify.json")
+
+# =========================================================
+# SETUP
+# =========================================================
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def ensure_file(path, default):
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=4, ensure_ascii=False)
+
+ensure_file(GIVEAWAYS_FILE, {"giveaways": {}, "panel_message_id": None})
+ensure_file(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
+ensure_file(VERIFY_FILE, {"users": {}, "panel_message_id": None})
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+def dt_to_iso(dt: datetime):
+    return dt.isoformat()
+
+def iso_to_dt(value: str):
+    return datetime.fromisoformat(value)
+
+def ts_full(dt: datetime):
+    return f"<t:{int(dt.timestamp())}:F>"
+
+def ts_relative(dt: datetime):
+    return f"<t:{int(dt.timestamp())}:R>"
+
+def random_code(length=6):
+    chars = string.ascii_uppercase + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.messages = True
+intents.message_content = False
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def has_role(member: discord.Member, role_id: int) -> bool:
+    return any(role.id == role_id for role in member.roles)
+
+def is_giveaway_staff(member: discord.Member) -> bool:
+    return has_role(member, GIVEAWAY_ALLOWED_ROLE_ID) or member.guild_permissions.administrator
+
+def is_ticket_staff(member: discord.Member) -> bool:
+    return has_role(member, TICKET_STAFF_ROLE_ID) or member.guild_permissions.administrator
+
+async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
+    try:
+        return await channel.fetch_message(message_id)
+    except Exception:
+        return None
+
+async def log_ticket_action(guild: discord.Guild, content: str):
+    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(content)
+        except Exception:
+            pass
+
+def sanitize_channel_name(text: str) -> str:
+    text = text.lower().replace(" ", "-")
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789-_"
+    text = "".join(c for c in text if c in allowed)
+    return text[:80] if text else "ticket"
+
+# =========================================================
+# GIVEAWAY
+# =========================================================
+
+class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
+    prize = discord.ui.TextInput(
+        label="Lot",
+        placeholder="Exemple : Nitro 1 mois",
+        max_length=100
+    )
+    duration_minutes = discord.ui.TextInput(
+        label="Durée en minutes",
+        placeholder="Exemple : 60",
+        max_length=10
+    )
+    winners_count = discord.ui.TextInput(
+        label="Nombre de gagnants",
+        placeholder="Exemple : 1",
+        max_length=3
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_giveaway_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        try:
+            duration = int(str(self.duration_minutes))
+            winners = int(str(self.winners_count))
+        except ValueError:
+            return await interaction.response.send_message("Durée et gagnants doivent être numériques.", ephemeral=True)
+
+        if duration <= 0 or winners <= 0:
+            return await interaction.response.send_message("Les valeurs doivent être supérieures à 0.", ephemeral=True)
+
+        end_at = now_utc() + timedelta(minutes=duration)
+
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY",
+            description=(
+                f"**Lot :** {self.prize}\n"
+                f"**Gagnants :** {winners}\n"
+                f"**Fin :** {ts_full(end_at)} ({ts_relative(end_at)})\n\n"
+                f"Clique sur **Participer** pour rejoindre."
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Créé par {interaction.user}")
+
+        msg = await interaction.channel.send(embed=embed, view=GiveawayJoinView())
+
+        data = load_json(GIVEAWAYS_FILE)
+        data["giveaways"][str(msg.id)] = {
+            "guild_id": interaction.guild.id,
+            "channel_id": interaction.channel.id,
+            "message_id": msg.id,
+            "prize": str(self.prize),
+            "winners_count": winners,
+            "end_at": dt_to_iso(end_at),
+            "ended": False,
+            "participants": [],
+            "created_by": interaction.user.id
+        }
+        save_json(GIVEAWAYS_FILE, data)
+
+        await interaction.response.send_message(f"Giveaway créé : {msg.jump_url}", ephemeral=True)
+
+class GiveawayPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Créer un giveaway",
+        emoji="🎉",
+        style=discord.ButtonStyle.success,
+        custom_id="giveaway_panel_create"
+    )
+    async def create_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_giveaway_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_modal(GiveawayCreateModal())
+
+class GiveawayJoinView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Participer",
+        emoji="🎊",
+        style=discord.ButtonStyle.primary,
+        custom_id="giveaway_join_button"
+    )
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_json(GIVEAWAYS_FILE)
+        giveaway = data["giveaways"].get(str(interaction.message.id))
+
+        if not giveaway:
+            return await interaction.response.send_message("Giveaway introuvable.", ephemeral=True)
+
+        if giveaway["ended"]:
+            return await interaction.response.send_message("Ce giveaway est terminé.", ephemeral=True)
+
+        user_id = interaction.user.id
+        if user_id in giveaway["participants"]:
+            return await interaction.response.send_message("Tu participes déjà.", ephemeral=True)
+
+        giveaway["participants"].append(user_id)
+        save_json(GIVEAWAYS_FILE, data)
+
+        await interaction.response.send_message("Participation enregistrée. 🎉", ephemeral=True)
+
+class GiveawayResultView(discord.ui.View):
+    def __init__(self, giveaway_message_id: int):
+        super().__init__(timeout=None)
+        self.giveaway_message_id = giveaway_message_id
+
+    @discord.ui.button(
+        label="Reroll",
+        emoji="🔁",
+        style=discord.ButtonStyle.secondary,
+        custom_id="giveaway_reroll_button"
+    )
+    async def reroll(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_giveaway_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        data = load_json(GIVEAWAYS_FILE)
+        giveaway = data["giveaways"].get(str(self.giveaway_message_id))
+
+        if not giveaway:
+            return await interaction.response.send_message("Giveaway introuvable.", ephemeral=True)
+
+        participants = giveaway["participants"]
+        if not participants:
+            return await interaction.response.send_message("Aucun participant.", ephemeral=True)
+
+        winners_count = min(giveaway["winners_count"], len(participants))
+        winners = random.sample(participants, winners_count)
+        mentions = ", ".join(f"<@{uid}>" for uid in winners)
+
+        await interaction.channel.send(
+            f"🔁 **Reroll** du giveaway **{giveaway['prize']}**\nNouveau(x) gagnant(s) : {mentions}"
+        )
+        await interaction.response.send_message("Reroll effectué.", ephemeral=True)
+
+async def finish_giveaway(message_id: str):
+    data = load_json(GIVEAWAYS_FILE)
+    giveaway = data["giveaways"].get(message_id)
+
+    if not giveaway or giveaway["ended"]:
+        return
+
+    channel = bot.get_channel(giveaway["channel_id"])
+    if not isinstance(channel, discord.TextChannel):
+        giveaway["ended"] = True
+        save_json(GIVEAWAYS_FILE, data)
+        return
+
+    message = await safe_fetch_message(channel, giveaway["message_id"])
+    participants = giveaway["participants"]
+    winners_count = min(giveaway["winners_count"], len(participants))
+
+    if winners_count > 0:
+        winners = random.sample(participants, winners_count)
+        winner_mentions = ", ".join(f"<@{uid}>" for uid in winners)
+    else:
+        winners = []
+        winner_mentions = "Aucun gagnant"
+
+    giveaway["ended"] = True
+    giveaway["winner_ids"] = winners
+    save_json(GIVEAWAYS_FILE, data)
+
+    embed = discord.Embed(
+        title="🎉 GIVEAWAY TERMINÉ",
+        description=(
+            f"**Lot :** {giveaway['prize']}\n"
+            f"**Gagnant(s) :** {winner_mentions}\n"
+            f"**Participants :** {len(participants)}"
+        ),
+        color=discord.Color.red()
+    )
+
+    if message:
+        try:
+            await message.edit(embed=embed, view=GiveawayResultView(giveaway["message_id"]))
+        except Exception:
+            pass
+
+    await channel.send(
+        f"🎉 Giveaway terminé pour **{giveaway['prize']}**\n"
+        f"Gagnant(s) : {winner_mentions}"
+    )
+
+@tasks.loop(seconds=15)
+async def giveaway_watcher():
+    data = load_json(GIVEAWAYS_FILE)
+    current = now_utc()
+
+    for message_id, giveaway in list(data["giveaways"].items()):
+        if giveaway["ended"]:
+            continue
+
+        end_at = iso_to_dt(giveaway["end_at"])
+        if current >= end_at:
+            await finish_giveaway(message_id)
+
+# =========================================================
+# TICKETS
+# =========================================================
+
+class TicketOpenView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Ouvrir un ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.success,
+        custom_id="ticket_open_button"
+    )
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        guild = interaction.guild
+        member = interaction.user
+
+        tdata = load_json(TICKETS_FILE)
+
+        for channel_id, info in tdata["tickets"].items():
+            if info["guild_id"] == guild.id and info["owner_id"] == member.id:
+                existing = guild.get_channel(int(channel_id))
+                if existing:
+                    return await interaction.response.send_message(
+                        f"Tu as déjà un ticket ouvert : {existing.mention}",
+                        ephemeral=True
+                    )
+
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return await interaction.response.send_message("Catégorie ticket introuvable.", ephemeral=True)
+
+        staff_role = guild.get_role(TICKET_STAFF_ROLE_ID)
+        if not staff_role:
+            return await interaction.response.send_message("Rôle staff introuvable.", ephemeral=True)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                attach_files=True, embed_links=True
+            ),
+            staff_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                manage_channels=True
+            )
+        }
+
+        cname = sanitize_channel_name(f"ticket-{member.name}")
+        channel = await guild.create_text_channel(
+            name=cname,
+            category=category,
+            overwrites=overwrites,
+            reason=f"Ticket créé pour {member}"
+        )
+
+        tdata["tickets"][str(channel.id)] = {
+            "guild_id": guild.id,
+            "owner_id": member.id,
+            "created_at": dt_to_iso(now_utc()),
+            "members_added": []
+        }
+        save_json(TICKETS_FILE, tdata)
+
+        embed = discord.Embed(
+            title="🎫 Ticket ouvert",
+            description=(
+                f"Bonjour {member.mention}, expose ton problème ici.\n\n"
+                f"Le staff va te répondre."
+            ),
+            color=discord.Color.green()
+        )
+
+        await channel.send(
+            content=f"{member.mention} <@&{TICKET_STAFF_ROLE_ID}>",
+            embed=embed,
+            view=TicketManageView()
+        )
+
+        await log_ticket_action(guild, f"📂 Ticket créé : {channel.mention} par {member.mention}")
+        await interaction.response.send_message(f"Ticket créé : {channel.mention}", ephemeral=True)
+
+class AddUserModal(discord.ui.Modal, title="Ajouter un membre au ticket"):
+    user_id_input = discord.ui.TextInput(
+        label="ID utilisateur",
+        placeholder="Colle l'ID Discord du membre",
+        max_length=25
+    )
+
+    def __init__(self, channel_id: int):
+        super().__init__()
+        self.channel_id = channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_ticket_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        try:
+            user_id = int(str(self.user_id_input))
+        except ValueError:
+            return await interaction.response.send_message("ID invalide.", ephemeral=True)
+
+        channel = interaction.guild.get_channel(self.channel_id)
+        member = interaction.guild.get_member(user_id)
+
+        if not isinstance(channel, discord.TextChannel) or not member:
+            return await interaction.response.send_message("Salon ou membre introuvable.", ephemeral=True)
+
+        overwrite = channel.overwrites_for(member)
+        overwrite.view_channel = True
+        overwrite.send_messages = True
+        overwrite.read_message_history = True
+        await channel.set_permissions(member, overwrite=overwrite)
+
+        tdata = load_json(TICKETS_FILE)
+        info = tdata["tickets"].get(str(channel.id))
+        if info and user_id not in info["members_added"]:
+            info["members_added"].append(user_id)
+            save_json(TICKETS_FILE, tdata)
+
+        await log_ticket_action(interaction.guild, f"➕ {member.mention} ajouté à {channel.mention} par {interaction.user.mention}")
+        await interaction.response.send_message(f"{member.mention} a été ajouté.", ephemeral=True)
+
+class RemoveUserModal(discord.ui.Modal, title="Retirer un membre du ticket"):
+    user_id_input = discord.ui.TextInput(
+        label="ID utilisateur",
+        placeholder="Colle l'ID Discord du membre",
+        max_length=25
+    )
+
+    def __init__(self, channel_id: int):
+        super().__init__()
+        self.channel_id = channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_ticket_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        try:
+            user_id = int(str(self.user_id_input))
+        except ValueError:
+            return await interaction.response.send_message("ID invalide.", ephemeral=True)
+
+        channel = interaction.guild.get_channel(self.channel_id)
+        member = interaction.guild.get_member(user_id)
+
+        if not isinstance(channel, discord.TextChannel) or not member:
+            return await interaction.response.send_message("Salon ou membre introuvable.", ephemeral=True)
+
+        await channel.set_permissions(member, overwrite=None)
+
+        tdata = load_json(TICKETS_FILE)
+        info = tdata["tickets"].get(str(channel.id))
+        if info and user_id in info["members_added"]:
+            info["members_added"].remove(user_id)
+            save_json(TICKETS_FILE, tdata)
+
+        await log_ticket_action(interaction.guild, f"➖ {member.mention} retiré de {channel.mention} par {interaction.user.mention}")
+        await interaction.response.send_message(f"{member.mention} a été retiré.", ephemeral=True)
+
+class TicketManageView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Fermer",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_close_button"
+    )
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        tdata = load_json(TICKETS_FILE)
+        info = tdata["tickets"].get(str(interaction.channel.id))
+        if not info:
+            return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
+
+        allowed = interaction.user.id == info["owner_id"] or is_ticket_staff(interaction.user)
+        if not allowed:
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_message("Fermeture du ticket dans 3 secondes...")
+        await asyncio.sleep(3)
+
+        await export_transcript(interaction.channel, interaction.guild)
+
+        tdata = load_json(TICKETS_FILE)
+        tdata["tickets"].pop(str(interaction.channel.id), None)
+        save_json(TICKETS_FILE, tdata)
+
+        await log_ticket_action(interaction.guild, f"🗑️ Ticket fermé : #{interaction.channel.name} par {interaction.user.mention}")
+        await interaction.channel.delete(reason=f"Ticket fermé par {interaction.user}")
+
+    @discord.ui.button(
+        label="Transcript",
+        emoji="📄",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ticket_transcript_button"
+    )
+    async def transcript_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        tdata = load_json(TICKETS_FILE)
+        info = tdata["tickets"].get(str(interaction.channel.id))
+        if not info:
+            return await interaction.response.send_message("Ce salon n'est pas un ticket.", ephemeral=True)
+
+        allowed = interaction.user.id == info["owner_id"] or is_ticket_staff(interaction.user)
+        if not allowed:
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        file_path = await build_transcript_file(interaction.channel)
+        await interaction.response.send_message("Transcript généré.", file=discord.File(file_path), ephemeral=True)
+
+    @discord.ui.button(
+        label="Ajouter",
+        emoji="➕",
+        style=discord.ButtonStyle.primary,
+        custom_id="ticket_add_user_button"
+    )
+    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_ticket_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_modal(AddUserModal(interaction.channel.id))
+
+    @discord.ui.button(
+        label="Retirer",
+        emoji="➖",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ticket_remove_user_button"
+    )
+    async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        if not is_ticket_staff(interaction.user):
+            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+        await interaction.response.send_modal(RemoveUserModal(interaction.channel.id))
+
+async def build_transcript_file(channel: discord.TextChannel) -> str:
+    path = os.path.join(DATA_DIR, f"transcript_{channel.id}.txt")
+    lines = []
+
+    async for msg in channel.history(limit=None, oldest_first=True):
+        created = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        content = msg.content if msg.content else ""
+        attachment_text = ""
+        if msg.attachments:
+            attachment_text = " | pièces jointes : " + ", ".join(a.url for a in msg.attachments)
+        lines.append(f"[{created}] {msg.author} : {content}{attachment_text}")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) if lines else "Aucun message.")
+
+    return path
+
+async def export_transcript(channel: discord.TextChannel, guild: discord.Guild):
+    path = await build_transcript_file(channel)
+    log_channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
+    if isinstance(log_channel, discord.TextChannel):
+        try:
+            await log_channel.send(
+                content=f"📄 Transcript de #{channel.name}",
+                file=discord.File(path)
+            )
+        except Exception:
+            pass
+
+# =========================================================
+# CAPTCHA / VERIFY
+# =========================================================
+
+class VerifyCaptchaModal(discord.ui.Modal, title="Vérification captcha"):
+    captcha_input = discord.ui.TextInput(
+        label="Recopie le code",
+        placeholder="Exemple : A1B2C3",
+        max_length=12
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        vdata = load_json(VERIFY_FILE)
+        entry = vdata["users"].get(str(interaction.user.id))
+
+        if not entry:
+            return await interaction.response.send_message("Aucun captcha en attente. Reclique sur le bouton.", ephemeral=True)
+
+        expected = entry["captcha"]
+        if str(self.captcha_input).strip().upper() != expected:
+            new_code = random_code()
+            entry["captcha"] = new_code
+            save_json(VERIFY_FILE, vdata)
+            return await interaction.response.send_message(
+                f"Captcha incorrect.\nNouveau code : `{new_code}`",
+                ephemeral=True
+            )
+
+        guild = interaction.guild
+        verified_role = guild.get_role(VERIFIED_ROLE_ID)
+        unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
+
+        if not verified_role or not unverified_role:
+            return await interaction.response.send_message("Rôles de vérification introuvables.", ephemeral=True)
+
+        try:
+            if unverified_role in interaction.user.roles:
+                await interaction.user.remove_roles(unverified_role, reason="Captcha validé")
+            await interaction.user.add_roles(verified_role, reason="Captcha validé")
+        except Exception:
+            return await interaction.response.send_message("Impossible de modifier les rôles.", ephemeral=True)
+
+        entry["verified"] = True
+        save_json(VERIFY_FILE, vdata)
+
+        await interaction.response.send_message("✅ Vérification réussie. Bienvenue !", ephemeral=True)
+
+class VerifyPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Me vérifier",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="verify_open_button"
+    )
+    async def verify_open(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+        vdata = load_json(VERIFY_FILE)
+        code = random_code()
+
+        vdata["users"][str(interaction.user.id)] = {
+            "captcha": code,
+            "verified": False,
+            "updated_at": dt_to_iso(now_utc())
+        }
+        save_json(VERIFY_FILE, vdata)
+
+        await interaction.response.send_message(
+            f"Recopie ce code dans la fenêtre suivante : `{code}`",
+            ephemeral=True
+        )
+        await interaction.followup.send_modal(VerifyCaptchaModal())
+
+# =========================================================
+# PANELS
+# =========================================================
+
+async def ensure_panel(channel: discord.TextChannel, kind: str):
+    if kind == "giveaway":
+        data = load_json(GIVEAWAYS_FILE)
+        message_id = data.get("panel_message_id")
+        if message_id:
+            msg = await safe_fetch_message(channel, message_id)
+            if msg:
+                return
+
+        embed = discord.Embed(
+            title="🎉 Giveaway",
+            description="Clique sur le bouton ci-dessous pour créer un giveaway.",
+            color=discord.Color.blurple()
+        )
+        msg = await channel.send(embed=embed, view=GiveawayPanelView())
+        data["panel_message_id"] = msg.id
+        save_json(GIVEAWAYS_FILE, data)
+
+    elif kind == "ticket":
+        data = load_json(TICKETS_FILE)
+        message_id = data.get("panel_message_id")
+        if message_id:
+            msg = await safe_fetch_message(channel, message_id)
+            if msg:
+                return
+
+        embed = discord.Embed(
+            title="🎫 Support",
+            description="Clique sur le bouton ci-dessous pour ouvrir un ticket privé.",
+            color=discord.Color.green()
+        )
+        msg = await channel.send(embed=embed, view=TicketOpenView())
+        data["panel_message_id"] = msg.id
+        save_json(TICKETS_FILE, data)
+
+    elif kind == "verify":
+        data = load_json(VERIFY_FILE)
+        message_id = data.get("panel_message_id")
+        if message_id:
+            msg = await safe_fetch_message(channel, message_id)
+            if msg:
+                return
+
+        embed = discord.Embed(
+            title="🛡️ Vérification",
+            description="Clique sur le bouton pour lancer le captcha et accéder au serveur.",
+            color=discord.Color.orange()
+        )
+        msg = await channel.send(embed=embed, view=VerifyPanelView())
+        data["panel_message_id"] = msg.id
+        save_json(VERIFY_FILE, data)
+
+# =========================================================
+# EVENTS
+# =========================================================
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.guild.id != GUILD_ID:
+        return
+
+    role = member.guild.get_role(UNVERIFIED_ROLE_ID)
+    if role:
+        try:
+            await member.add_roles(role, reason="Nouveau membre non vérifié")
+        except Exception:
+            pass
+
+    vdata = load_json(VERIFY_FILE)
+    vdata["users"][str(member.id)] = {
+        "captcha": random_code(),
+        "verified": False,
+        "updated_at": dt_to_iso(now_utc())
+    }
+    save_json(VERIFY_FILE, vdata)
+
+@bot.event
+async def on_ready():
+    print(f"Connecté en tant que {bot.user} ({bot.user.id})")
+
+    # Réenregistrer les vues persistantes
+    bot.add_view(GiveawayPanelView())
+    bot.add_view(GiveawayJoinView())
+    bot.add_view(GiveawayResultView(0))   # placeholder pour custom_id statique
+    bot.add_view(TicketOpenView())
+    bot.add_view(TicketManageView())
+    bot.add_view(VerifyPanelView())
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        print("Serveur introuvable. Vérifie GUILD_ID.")
+        return
+
+    giveaway_channel = guild.get_channel(GIVEAWAY_PANEL_CHANNEL_ID)
+    ticket_channel = guild.get_channel(TICKET_PANEL_CHANNEL_ID)
+    verify_channel = guild.get_channel(VERIFY_CHANNEL_ID)
+
+    if isinstance(giveaway_channel, discord.TextChannel):
+        await ensure_panel(giveaway_channel, "giveaway")
+
+    if isinstance(ticket_channel, discord.TextChannel):
+        await ensure_panel(ticket_channel, "ticket")
+
+    if isinstance(verify_channel, discord.TextChannel):
+        await ensure_panel(verify_channel, "verify")
+
+    if not giveaway_watcher.is_running():
+        giveaway_watcher.start()
+
+# =========================================================
+# START
+# =========================================================
+
+bot.run(TOKEN)
