@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 # CONFIG
 # =========================================================
 
-TOKEN = "MTQ5MzY4OTAzNzk0MzQ3MjIzOQ.GjC0XM.EjTBK5VVF-kque8rcCADXgNYoAYjkQUT3dQyB8"
+TOKEN = os.getenv("TOKEN")
 
 GUILD_ID = 1336409517298286612
 
