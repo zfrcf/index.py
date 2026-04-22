@@ -18,11 +18,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # SECURITE / RAID
 # =========================
 
-SECURITY_LOG_CHANNEL_ID = 0
-
-# IDs blacklistés de manière permanente
-BLACKLIST_FILE = os.path.join(DATA_DIR, "blacklist.json")
-
+SECURITY_LOGS_CHANNEL_ID = 1496588030574858280
 # Anti-raid
 RAID_JOIN_THRESHOLD = 5          # nombre d'arrivées
 RAID_TIME_WINDOW_SECONDS = 15    # en combien de secondes
