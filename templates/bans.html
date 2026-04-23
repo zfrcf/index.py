@@ -7,7 +7,7 @@
 <style>
 body {
     margin: 0;
-    font-family: Arial;
+    font-family: Arial, sans-serif;
     background: #0f172a;
     color: white;
     padding: 30px;
@@ -105,13 +105,12 @@ ul {
 </div>
 
 <script>
-const token = new URLSearchParams(window.location.search).get("token");
-
+const token = new URLSearchParams(window.location.search).get("token") || "";
 let lastData = "";
 
 async function loadData() {
     try {
-        const res = await fetch("/api/bans?token=" + token);
+        const res = await fetch("/api/bans?token=" + encodeURIComponent(token));
         const data = await res.json();
 
         if (data.error) {
@@ -120,14 +119,11 @@ async function loadData() {
         }
 
         const jsonString = JSON.stringify(data);
-
-        // évite de re-render si rien change
         if (jsonString === lastData) return;
         lastData = jsonString;
 
         renderBans(data.bans);
         renderBlacklist(data.blacklist_ids);
-
         document.getElementById("error").innerText = "";
 
     } catch (err) {
@@ -147,13 +143,11 @@ function renderBans(bans) {
 
     bans.forEach(ban => {
         const row = document.createElement("tr");
-
         row.innerHTML = `
             <td>${ban.id}</td>
             <td>${ban.name}</td>
             <td>${ban.reason || "Aucune"}</td>
         `;
-
         table.appendChild(row);
     });
 }
@@ -175,10 +169,7 @@ function renderBlacklist(list) {
     });
 }
 
-// refresh toutes les 5 secondes
 setInterval(loadData, 5000);
-
-// premier chargement instant
 loadData();
 </script>
 
