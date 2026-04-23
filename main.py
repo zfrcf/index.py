@@ -11,10 +11,10 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from discord import app_commands
 from flask import Flask, request, abort
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # =========================================================
 # ENV
@@ -28,7 +28,7 @@ WEB_TOKEN = os.getenv("WEB_TOKEN", "")
 PORT = int(os.getenv("PORT", "8080"))
 
 # =========================================================
-# DATA
+# DATA DIR / FILES
 # =========================================================
 
 DATA_DIR = "bot_data"
@@ -46,18 +46,21 @@ SECURITY_FILE = os.path.join(DATA_DIR, "security.json")
 
 GUILD_ID = 1336409517298286612
 
-# Giveaways
+# ---------- GIVEAWAYS ----------
+# Salon staff où seul le staff voit le bouton de création
 GIVEAWAY_STAFF_PANEL_CHANNEL_ID = 1496178317739556994
+# Salon public où les giveaways sont envoyés
 GIVEAWAY_PUBLIC_CHANNEL_ID = 1496178317739556994
+# Rôle autorisé à créer / reroll
 GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644
 
-# Tickets
-TICKET_PANEL_CHANNEL_ID = 1496179371864621116
+# ---------- TICKETS ----------
+TICKET_PANEL_CHANNEL_ID = 1496178317739556994
 TICKET_CATEGORY_ID = 1496178590080040960
 TICKET_STAFF_ROLE_ID = 1496179072005443644
 TICKET_LOG_CHANNEL_ID = 1496178736217854002
 
-# Verify
+# ---------- VERIFY ----------
 VERIFY_CHANNEL_ID = 1496179758969651390
 UNVERIFIED_ROLE_ID = 1496179992651104506
 VERIFIED_ROLE_ID = 1496179832717836368
@@ -65,31 +68,34 @@ VERIFY_TIMEOUT_SECONDS = 300
 MAX_VERIFY_TRIES = 3
 SEND_VERIFY_WELCOME_MESSAGE = True
 
-# Logs
-MEMBER_LOG_CHANNEL_ID = 1496554423491760218
-VERIFY_LOG_CHANNEL_ID = 1496461263381856388
-SANCTION_LOG_CHANNEL_ID = 1496564599707930755
-SECURITY_LOG_CHANNEL_ID = 1496588030574858280
+# ---------- STATS ----------
+ALL_MEMBERS_CHANNEL_ID = 0
+MEMBERS_CHANNEL_ID = 0
+BOTS_CHANNEL_ID = 0
 
-# Server stats
-ALL_MEMBERS_CHANNEL_ID = 1496534691715743854
-MEMBERS_CHANNEL_ID = 1496538997323862179
-BOTS_CHANNEL_ID = 1496539148570591252
+# ---------- LOGS ----------
+MEMBER_LOG_CHANNEL_ID = 0
+VERIFY_LOG_CHANNEL_ID = 0
+SANCTION_LOG_CHANNEL_ID = 0
+SECURITY_LOG_CHANNEL_ID = 0
 
-# Whitelist
-STAFF_ROLE_IDS = [1496179072005443644]
-PARTNER_ROLE_IDS = []
+# ---------- WHITELIST ----------
+STAFF_ROLE_IDS = [
+    1496179072005443644,
+]
+PARTNER_ROLE_IDS = [
+    # ajoute ici des rôles partenaires si besoin
+]
 
-# Anti-alt
+# ---------- ANTI ALT / DOUBLE ----------
 MIN_ACCOUNT_AGE_DAYS = 3
 AUTO_KICK_TOO_RECENT_ACCOUNT = False
 
-# Anti-double heuristique
 ENABLE_ANTI_DOUBLE_HEURISTIC = True
 ANTI_DOUBLE_LOOKBACK_DAYS = 14
 AUTO_KICK_ON_DOUBLE_HEURISTIC = False
 
-# Anti profil
+# ---------- ANTI PROFILE ----------
 ANTI_NO_AVATAR_ENABLED = True
 AUTO_KICK_NO_AVATAR = False
 
@@ -109,29 +115,32 @@ SUSPICIOUS_NAME_PATTERNS = [
     r"www\.",
 ]
 
-# Anti messages
+# ---------- ANTI MESSAGES ----------
 ANTI_MASS_MENTION_ENABLED = True
 ANTI_MASS_MENTION_THRESHOLD = 5
+
 ANTI_LINK_SPAM_ENABLED = True
 ANTI_LINK_SPAM_THRESHOLD = 3
 ANTI_LINK_SPAM_WINDOW = 20
+
 AUTO_TIMEOUT_ON_MASS_MENTION = True
 AUTO_TIMEOUT_ON_LINK_SPAM = True
 AUTO_TIMEOUT_DURATION_MINUTES = 30
 DELETE_FLAGGED_MESSAGES = True
 
-# Anti raid
+# ---------- ANTI RAID ----------
 AUTO_REBAN_BLACKLISTED = True
 RAID_JOIN_THRESHOLD = 5
 RAID_TIME_WINDOW_SECONDS = 15
 RAID_MODE_DURATION = 300
+
 RAID_KICK_RECENT_ACCOUNTS = True
 RAID_MIN_ACCOUNT_AGE_DAYS = 7
 RAID_LOCKDOWN_CHANNELS = True
 RAID_DISABLE_INVITES = True
 
 # =========================================================
-# FILE INIT
+# DEFAULT FILES
 # =========================================================
 
 def ensure_file(path, default):
@@ -151,7 +160,7 @@ ensure_file(SECURITY_FILE, {
 })
 
 # =========================================================
-# UTILS
+# JSON / TIME HELPERS
 # =========================================================
 
 def load_json(path, default=None):
@@ -164,6 +173,23 @@ def load_json(path, default=None):
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
+def load_blacklist():
+    return load_json(BLACKLIST_FILE, {"banned_ids": []})
+
+def save_blacklist(data):
+    save_json(BLACKLIST_FILE, data)
+
+def load_security():
+    return load_json(SECURITY_FILE, {
+        "raid_mode": False,
+        "raid_until": None,
+        "locked_channels": [],
+        "join_timestamps": []
+    })
+
+def save_security(data):
+    save_json(SECURITY_FILE, data)
 
 def now_utc():
     return datetime.now(timezone.utc)
@@ -190,38 +216,6 @@ def sanitize_channel_name(text: str) -> str:
     text = "".join(c for c in text if c in allowed)
     return text[:80] if text else "ticket"
 
-def load_blacklist():
-    return load_json(BLACKLIST_FILE, {"banned_ids": []})
-
-def save_blacklist(data):
-    save_json(BLACKLIST_FILE, data)
-
-def load_security():
-    return load_json(SECURITY_FILE, {
-        "raid_mode": False,
-        "raid_until": None,
-        "locked_channels": [],
-        "join_timestamps": []
-    })
-
-def save_security(data):
-    save_json(SECURITY_FILE, data)
-
-def is_blacklisted(user_id: int) -> bool:
-    return user_id in load_blacklist()["banned_ids"]
-
-def add_blacklist(user_id: int):
-    data = load_blacklist()
-    if user_id not in data["banned_ids"]:
-        data["banned_ids"].append(user_id)
-        save_blacklist(data)
-
-def remove_blacklist(user_id: int):
-    data = load_blacklist()
-    if user_id in data["banned_ids"]:
-        data["banned_ids"].remove(user_id)
-        save_blacklist(data)
-
 # =========================================================
 # BOT
 # =========================================================
@@ -233,11 +227,10 @@ intents.messages = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
 message_tracker = defaultdict(lambda: deque())
 
 # =========================================================
-# HELPERS
+# ROLE / PROFILE HELPERS
 # =========================================================
 
 def has_role(member: discord.Member, role_id: int) -> bool:
@@ -283,6 +276,7 @@ def suspicious_name(member: discord.Member) -> tuple[bool, str]:
 def anti_double_suspicion(member: discord.Member) -> tuple[bool, str]:
     if not ENABLE_ANTI_DOUBLE_HEURISTIC:
         return False, ""
+
     lookback = timedelta(days=ANTI_DOUBLE_LOOKBACK_DAYS)
     lowered_name = member.name.lower().strip()
     lowered_display = member.display_name.lower().strip()
@@ -290,12 +284,15 @@ def anti_double_suspicion(member: discord.Member) -> tuple[bool, str]:
     for other in member.guild.members:
         if other.id == member.id or other.bot:
             continue
+
         if other.name.lower().strip() == lowered_name:
             if other.joined_at and (now_utc() - other.joined_at) <= lookback:
                 return True, f"Même username que {other} ({other.id})"
+
         if lowered_display and other.display_name.lower().strip() == lowered_display and is_recent_account(member):
             if other.joined_at and (now_utc() - other.joined_at) <= lookback:
                 return True, f"Même display name que {other} ({other.id}) + compte récent"
+
     return False, ""
 
 def contains_links(content: str) -> bool:
@@ -304,39 +301,157 @@ def contains_links(content: str) -> bool:
 def mass_mention_count(message: discord.Message) -> int:
     return len(message.mentions) + len(message.role_mentions)
 
-async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
+# =========================================================
+# BLACKLIST / RAID HELPERS
+# =========================================================
+
+def is_blacklisted(user_id: int) -> bool:
+    return user_id in load_blacklist()["banned_ids"]
+
+def add_blacklist(user_id: int):
+    data = load_blacklist()
+    if user_id not in data["banned_ids"]:
+        data["banned_ids"].append(user_id)
+        save_blacklist(data)
+
+def remove_blacklist(user_id: int):
+    data = load_blacklist()
+    if user_id in data["banned_ids"]:
+        data["banned_ids"].remove(user_id)
+        save_blacklist(data)
+
+def raid_mode_active() -> bool:
+    data = load_security()
+    if not data.get("raid_mode"):
+        return False
+
+    raid_until = data.get("raid_until")
+    if not raid_until:
+        return False
+
     try:
-        return await channel.fetch_message(message_id)
+        until_dt = iso_to_dt(raid_until)
     except Exception:
-        return None
+        return False
 
-async def log_embed(channel_id: int, embed: discord.Embed):
-    channel = bot.get_channel(channel_id)
-    if isinstance(channel, discord.TextChannel):
+    if now_utc() >= until_dt:
+        data["raid_mode"] = False
+        data["raid_until"] = None
+        save_security(data)
+        return False
+
+    return True
+
+async def lockdown_guild(guild: discord.Guild):
+    security = load_security()
+    if security.get("locked_channels"):
+        return
+
+    locked_channels = []
+
+    for channel in guild.channels:
+        if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel, discord.StageChannel)):
+            try:
+                everyone = channel.overwrites_for(guild.default_role)
+                locked_channels.append({
+                    "channel_id": channel.id,
+                    "send_messages": getattr(everyone, "send_messages", None),
+                    "add_reactions": getattr(everyone, "add_reactions", None),
+                    "create_public_threads": getattr(everyone, "create_public_threads", None),
+                    "create_private_threads": getattr(everyone, "create_private_threads", None),
+                    "send_messages_in_threads": getattr(everyone, "send_messages_in_threads", None),
+                    "create_instant_invite": getattr(everyone, "create_instant_invite", None),
+                })
+
+                everyone.send_messages = False
+                if hasattr(everyone, "add_reactions"):
+                    everyone.add_reactions = False
+                if hasattr(everyone, "create_public_threads"):
+                    everyone.create_public_threads = False
+                if hasattr(everyone, "create_private_threads"):
+                    everyone.create_private_threads = False
+                if hasattr(everyone, "send_messages_in_threads"):
+                    everyone.send_messages_in_threads = False
+                if RAID_DISABLE_INVITES:
+                    everyone.create_instant_invite = False
+
+                await channel.set_permissions(guild.default_role, overwrite=everyone)
+            except Exception:
+                pass
+
+    security["locked_channels"] = locked_channels
+    save_security(security)
+
+async def unlock_guild(guild: discord.Guild):
+    security = load_security()
+    for entry in security.get("locked_channels", []):
+        channel = guild.get_channel(entry["channel_id"])
+        if channel is None:
+            continue
+
         try:
-            await channel.send(embed=embed)
+            everyone = channel.overwrites_for(guild.default_role)
+            everyone.send_messages = entry["send_messages"]
+            if hasattr(everyone, "add_reactions"):
+                everyone.add_reactions = entry["add_reactions"]
+            if hasattr(everyone, "create_public_threads"):
+                everyone.create_public_threads = entry["create_public_threads"]
+            if hasattr(everyone, "create_private_threads"):
+                everyone.create_private_threads = entry["create_private_threads"]
+            if hasattr(everyone, "send_messages_in_threads"):
+                everyone.send_messages_in_threads = entry["send_messages_in_threads"]
+            everyone.create_instant_invite = entry["create_instant_invite"]
+            await channel.set_permissions(guild.default_role, overwrite=everyone)
         except Exception:
             pass
 
-async def log_member_event(guild: discord.Guild, embed: discord.Embed):
-    await log_embed(MEMBER_LOG_CHANNEL_ID, embed)
+    security["locked_channels"] = []
+    save_security(security)
 
-async def log_verify_event(guild: discord.Guild, embed: discord.Embed):
-    await log_embed(VERIFY_LOG_CHANNEL_ID, embed)
+async def enable_raid_mode(guild: discord.Guild, reason: str):
+    if raid_mode_active():
+        return
 
-async def log_sanction(guild: discord.Guild, embed: discord.Embed):
-    await log_embed(SANCTION_LOG_CHANNEL_ID, embed)
+    security = load_security()
+    security["raid_mode"] = True
+    security["raid_until"] = dt_to_iso(now_utc() + timedelta(seconds=RAID_MODE_DURATION))
+    save_security(security)
 
-async def log_security(guild: discord.Guild, embed: discord.Embed):
-    await log_embed(SECURITY_LOG_CHANNEL_ID, embed)
+    if RAID_LOCKDOWN_CHANNELS:
+        await lockdown_guild(guild)
 
-async def log_ticket_action(guild: discord.Guild, content: str):
-    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
-    if isinstance(channel, discord.TextChannel):
-        try:
-            await channel.send(content)
-        except Exception:
-            pass
+    embed = discord.Embed(
+        title="🚨 Mode raid activé",
+        description=(
+            f"**Raison :** {reason}\n"
+            f"**Durée :** {RAID_MODE_DURATION}s\n"
+            f"**Lockdown :** {'Oui' if RAID_LOCKDOWN_CHANNELS else 'Non'}\n"
+            f"**Invites bloquées :** {'Oui' if RAID_DISABLE_INVITES else 'Non'}"
+        ),
+        color=discord.Color.red(),
+        timestamp=now_utc()
+    )
+    await log_security(guild, embed)
+
+async def disable_raid_mode(guild: discord.Guild):
+    security = load_security()
+    if not security.get("raid_mode"):
+        return
+
+    security["raid_mode"] = False
+    security["raid_until"] = None
+    save_security(security)
+
+    if RAID_LOCKDOWN_CHANNELS:
+        await unlock_guild(guild)
+
+    embed = discord.Embed(
+        title="✅ Mode raid désactivé",
+        description="Le serveur est revenu en mode normal.",
+        color=discord.Color.green(),
+        timestamp=now_utc()
+    )
+    await log_security(guild, embed)
 
 async def timeout_member(member: discord.Member, minutes: int, reason: str):
     until = now_utc() + timedelta(minutes=minutes)
@@ -345,6 +460,44 @@ async def timeout_member(member: discord.Member, minutes: int, reason: str):
         return True
     except Exception:
         return False
+
+# =========================================================
+# LOG HELPERS
+# =========================================================
+
+async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
+    try:
+        return await channel.fetch_message(message_id)
+    except Exception:
+        return None
+
+async def _send_embed(channel_id: int, embed: discord.Embed):
+    channel = bot.get_channel(channel_id)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+async def log_member_event(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(MEMBER_LOG_CHANNEL_ID, embed)
+
+async def log_verify_event(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(VERIFY_LOG_CHANNEL_ID, embed)
+
+async def log_sanction(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(SANCTION_LOG_CHANNEL_ID, embed)
+
+async def log_security(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(SECURITY_LOG_CHANNEL_ID, embed)
+
+async def log_ticket_action(guild: discord.Guild, content: str):
+    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(content)
+        except Exception:
+            pass
 
 # =========================================================
 # CAPTCHA IMAGE
@@ -373,16 +526,26 @@ def generate_captcha_image(code: str) -> io.BytesIO:
         y1 = random.randint(0, height)
         x2 = x1 + random.randint(20, 80)
         y2 = y1 + random.randint(5, 30)
-        color = (random.randint(180, 230), random.randint(180, 230), random.randint(180, 230))
+        color = (
+            random.randint(180, 230),
+            random.randint(180, 230),
+            random.randint(180, 230),
+        )
         draw.ellipse((x1, y1, x2, y2), outline=color, width=1)
 
     for _ in range(10):
         draw.line(
             (
-                random.randint(0, width), random.randint(0, height),
-                random.randint(0, width), random.randint(0, height),
+                random.randint(0, width),
+                random.randint(0, height),
+                random.randint(0, width),
+                random.randint(0, height),
             ),
-            fill=(random.randint(70, 180), random.randint(70, 180), random.randint(70, 180)),
+            fill=(
+                random.randint(70, 180),
+                random.randint(70, 180),
+                random.randint(70, 180),
+            ),
             width=random.randint(1, 3),
         )
 
@@ -390,7 +553,11 @@ def generate_captcha_image(code: str) -> io.BytesIO:
     x = 25
     for char in code:
         y = random.randint(20, 45)
-        color = (random.randint(20, 90), random.randint(20, 90), random.randint(20, 90))
+        color = (
+            random.randint(20, 90),
+            random.randint(20, 90),
+            random.randint(20, 90),
+        )
         angle = random.randint(-20, 20)
 
         char_img = Image.new("RGBA", (60, 70), (255, 255, 255, 0))
@@ -403,7 +570,11 @@ def generate_captcha_image(code: str) -> io.BytesIO:
     for _ in range(1200):
         draw.point(
             (random.randint(0, width - 1), random.randint(0, height - 1)),
-            fill=(random.randint(120, 220), random.randint(120, 220), random.randint(120, 220)),
+            fill=(
+                random.randint(120, 220),
+                random.randint(120, 220),
+                random.randint(120, 220),
+            ),
         )
 
     image = image.filter(ImageFilter.SMOOTH)
@@ -414,134 +585,6 @@ def generate_captcha_image(code: str) -> io.BytesIO:
 
 def captcha_discord_file(code: str) -> discord.File:
     return discord.File(generate_captcha_image(code), filename="captcha.png")
-
-# =========================================================
-# RAID / LOCKDOWN
-# =========================================================
-
-def raid_mode_active() -> bool:
-    data = load_security()
-    if not data.get("raid_mode"):
-        return False
-    raid_until = data.get("raid_until")
-    if not raid_until:
-        return False
-    try:
-        until_dt = iso_to_dt(raid_until)
-    except Exception:
-        return False
-    if now_utc() >= until_dt:
-        data["raid_mode"] = False
-        data["raid_until"] = None
-        save_security(data)
-        return False
-    return True
-
-async def lockdown_guild(guild: discord.Guild):
-    security = load_security()
-    if security.get("locked_channels"):
-        return
-
-    locked_channels = []
-    for channel in guild.channels:
-        if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel, discord.StageChannel)):
-            try:
-                everyone = channel.overwrites_for(guild.default_role)
-                locked_channels.append({
-                    "channel_id": channel.id,
-                    "send_messages": getattr(everyone, "send_messages", None),
-                    "add_reactions": getattr(everyone, "add_reactions", None),
-                    "create_public_threads": getattr(everyone, "create_public_threads", None),
-                    "create_private_threads": getattr(everyone, "create_private_threads", None),
-                    "send_messages_in_threads": getattr(everyone, "send_messages_in_threads", None),
-                    "create_instant_invite": getattr(everyone, "create_instant_invite", None),
-                })
-                everyone.send_messages = False
-                if hasattr(everyone, "add_reactions"):
-                    everyone.add_reactions = False
-                if hasattr(everyone, "create_public_threads"):
-                    everyone.create_public_threads = False
-                if hasattr(everyone, "create_private_threads"):
-                    everyone.create_private_threads = False
-                if hasattr(everyone, "send_messages_in_threads"):
-                    everyone.send_messages_in_threads = False
-                if RAID_DISABLE_INVITES:
-                    everyone.create_instant_invite = False
-                await channel.set_permissions(guild.default_role, overwrite=everyone)
-            except Exception:
-                pass
-
-    security["locked_channels"] = locked_channels
-    save_security(security)
-
-async def unlock_guild(guild: discord.Guild):
-    security = load_security()
-    for entry in security.get("locked_channels", []):
-        channel = guild.get_channel(entry["channel_id"])
-        if not channel:
-            continue
-        try:
-            everyone = channel.overwrites_for(guild.default_role)
-            everyone.send_messages = entry["send_messages"]
-            if hasattr(everyone, "add_reactions"):
-                everyone.add_reactions = entry["add_reactions"]
-            if hasattr(everyone, "create_public_threads"):
-                everyone.create_public_threads = entry["create_public_threads"]
-            if hasattr(everyone, "create_private_threads"):
-                everyone.create_private_threads = entry["create_private_threads"]
-            if hasattr(everyone, "send_messages_in_threads"):
-                everyone.send_messages_in_threads = entry["send_messages_in_threads"]
-            everyone.create_instant_invite = entry["create_instant_invite"]
-            await channel.set_permissions(guild.default_role, overwrite=everyone)
-        except Exception:
-            pass
-
-    security["locked_channels"] = []
-    save_security(security)
-
-async def enable_raid_mode(guild: discord.Guild, reason: str):
-    if raid_mode_active():
-        return
-    security = load_security()
-    security["raid_mode"] = True
-    security["raid_until"] = dt_to_iso(now_utc() + timedelta(seconds=RAID_MODE_DURATION))
-    save_security(security)
-
-    if RAID_LOCKDOWN_CHANNELS:
-        await lockdown_guild(guild)
-
-    embed = discord.Embed(
-        title="🚨 Mode raid activé",
-        description=(
-            f"**Raison :** {reason}\n"
-            f"**Durée :** {RAID_MODE_DURATION}s\n"
-            f"**Lockdown :** {'Oui' if RAID_LOCKDOWN_CHANNELS else 'Non'}\n"
-            f"**Blocage invites :** {'Oui' if RAID_DISABLE_INVITES else 'Non'}"
-        ),
-        color=discord.Color.red(),
-        timestamp=now_utc()
-    )
-    await log_security(guild, embed)
-
-async def disable_raid_mode(guild: discord.Guild):
-    security = load_security()
-    if not security.get("raid_mode"):
-        return
-
-    security["raid_mode"] = False
-    security["raid_until"] = None
-    save_security(security)
-
-    if RAID_LOCKDOWN_CHANNELS:
-        await unlock_guild(guild)
-
-    embed = discord.Embed(
-        title="✅ Mode raid désactivé",
-        description="Le serveur est revenu en mode normal.",
-        color=discord.Color.green(),
-        timestamp=now_utc()
-    )
-    await log_security(guild, embed)
 
 # =========================================================
 # GIVEAWAYS
@@ -565,7 +608,7 @@ class GiveawayCreateModal(discord.ui.Modal, title="Créer un giveaway"):
             return await interaction.response.send_message("Valeurs invalides.", ephemeral=True)
 
         if duration <= 0 or winners <= 0:
-            return await interaction.response.send_message("Les valeurs doivent être > 0.", ephemeral=True)
+            return await interaction.response.send_message("Les valeurs doivent être supérieures à 0.", ephemeral=True)
 
         public_channel = interaction.guild.get_channel(GIVEAWAY_PUBLIC_CHANNEL_ID)
         if not isinstance(public_channel, discord.TextChannel):
@@ -750,7 +793,7 @@ class TicketOpenView(discord.ui.View):
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True),
-            staff_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True)
+            staff_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
         }
 
         channel = await guild.create_text_channel(
@@ -763,8 +806,7 @@ class TicketOpenView(discord.ui.View):
         tdata["tickets"][str(channel.id)] = {
             "guild_id": guild.id,
             "owner_id": member.id,
-            "created_at": dt_to_iso(now_utc()),
-            "members_added": []
+            "created_at": dt_to_iso(now_utc())
         }
         save_json(TICKETS_FILE, tdata)
 
@@ -776,78 +818,6 @@ class TicketOpenView(discord.ui.View):
         await channel.send(content=f"{member.mention} <@&{TICKET_STAFF_ROLE_ID}>", embed=embed, view=TicketManageView())
         await log_ticket_action(guild, f"📂 Ticket créé : {channel.mention} par {member.mention}")
         await interaction.response.send_message(f"Ticket créé : {channel.mention}", ephemeral=True)
-
-class AddUserModal(discord.ui.Modal, title="Ajouter un membre au ticket"):
-    user_id_input = discord.ui.TextInput(label="ID utilisateur", placeholder="Colle l'ID Discord du membre", max_length=25)
-
-    def __init__(self, channel_id: int):
-        super().__init__()
-        self.channel_id = channel_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-        if not is_ticket_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-
-        try:
-            user_id = int(str(self.user_id_input))
-        except ValueError:
-            return await interaction.response.send_message("ID invalide.", ephemeral=True)
-
-        channel = interaction.guild.get_channel(self.channel_id)
-        member = interaction.guild.get_member(user_id)
-        if not isinstance(channel, discord.TextChannel) or not member:
-            return await interaction.response.send_message("Salon ou membre introuvable.", ephemeral=True)
-
-        overwrite = channel.overwrites_for(member)
-        overwrite.view_channel = True
-        overwrite.send_messages = True
-        overwrite.read_message_history = True
-        await channel.set_permissions(member, overwrite=overwrite)
-
-        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
-        info = tdata["tickets"].get(str(channel.id))
-        if info and user_id not in info["members_added"]:
-            info["members_added"].append(user_id)
-            save_json(TICKETS_FILE, tdata)
-
-        await log_ticket_action(interaction.guild, f"➕ {member.mention} ajouté à {channel.mention} par {interaction.user.mention}")
-        await interaction.response.send_message(f"{member.mention} a été ajouté.", ephemeral=True)
-
-class RemoveUserModal(discord.ui.Modal, title="Retirer un membre du ticket"):
-    user_id_input = discord.ui.TextInput(label="ID utilisateur", placeholder="Colle l'ID Discord du membre", max_length=25)
-
-    def __init__(self, channel_id: int):
-        super().__init__()
-        self.channel_id = channel_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-        if not is_ticket_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-
-        try:
-            user_id = int(str(self.user_id_input))
-        except ValueError:
-            return await interaction.response.send_message("ID invalide.", ephemeral=True)
-
-        channel = interaction.guild.get_channel(self.channel_id)
-        member = interaction.guild.get_member(user_id)
-        if not isinstance(channel, discord.TextChannel) or not member:
-            return await interaction.response.send_message("Salon ou membre introuvable.", ephemeral=True)
-
-        await channel.set_permissions(member, overwrite=None)
-
-        tdata = load_json(TICKETS_FILE, {"tickets": {}, "panel_message_id": None})
-        info = tdata["tickets"].get(str(channel.id))
-        if info and user_id in info["members_added"]:
-            info["members_added"].remove(user_id)
-            save_json(TICKETS_FILE, tdata)
-
-        await log_ticket_action(interaction.guild, f"➖ {member.mention} retiré de {channel.mention} par {interaction.user.mention}")
-        await interaction.response.send_message(f"{member.mention} a été retiré.", ephemeral=True)
 
 async def build_transcript_file(channel: discord.TextChannel) -> str:
     path = os.path.join(DATA_DIR, f"transcript_{channel.id}.txt")
@@ -917,22 +887,6 @@ class TicketManageView(discord.ui.View):
         file_path = await build_transcript_file(interaction.channel)
         await interaction.response.send_message("Transcript généré.", file=discord.File(file_path), ephemeral=True)
 
-    @discord.ui.button(label="Ajouter", emoji="➕", style=discord.ButtonStyle.primary, custom_id="ticket_add_user_button")
-    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-        if not is_ticket_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-        await interaction.response.send_modal(AddUserModal(interaction.channel.id))
-
-    @discord.ui.button(label="Retirer", emoji="➖", style=discord.ButtonStyle.secondary, custom_id="ticket_remove_user_button")
-    async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Action invalide.", ephemeral=True)
-        if not is_ticket_staff(interaction.user):
-            return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
-        await interaction.response.send_modal(RemoveUserModal(interaction.channel.id))
-
 # =========================================================
 # VERIFY
 # =========================================================
@@ -978,8 +932,6 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Validation du captcha"):
                 color=discord.Color.red(),
                 timestamp=now_utc()
             )
-            if interaction.user.display_avatar:
-                fail_embed.set_thumbnail(url=interaction.user.display_avatar.url)
             await log_verify_event(interaction.guild, fail_embed)
 
             if tries_left <= 0:
@@ -999,7 +951,6 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Validation du captcha"):
                     timestamp=now_utc()
                 )
                 await log_verify_event(interaction.guild, kick_embed)
-
                 return await interaction.response.send_message("❌ Trop d'erreurs. Tu as été expulsé.", ephemeral=True)
 
             image_file = captcha_discord_file(entry["captcha"])
@@ -1035,8 +986,6 @@ class VerifyCaptchaModal(discord.ui.Modal, title="Validation du captcha"):
             color=discord.Color.green(),
             timestamp=now_utc()
         )
-        if interaction.user.display_avatar:
-            success_embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await log_verify_event(interaction.guild, success_embed)
 
         done_embed = discord.Embed(
@@ -1075,7 +1024,7 @@ class VerifyPanelView(discord.ui.View):
                 "Pour accéder au serveur, complète le captcha.\n\n"
                 f"**Temps limite :** 5 minutes\n"
                 f"**Essais max :** {MAX_VERIFY_TRIES}\n"
-                f"**Âge minimal conseillé du compte :** {MIN_ACCOUNT_AGE_DAYS} jour(s)"
+                f"**Âge minimum conseillé du compte :** {MIN_ACCOUNT_AGE_DAYS} jour(s)"
             ),
             color=discord.Color.orange()
         )
@@ -1133,7 +1082,7 @@ async def verify_timeout_watcher():
         save_json(VERIFY_FILE, vdata)
 
 # =========================================================
-# SERVER STATS
+# STATS
 # =========================================================
 
 async def update_server_stats_once():
@@ -1165,14 +1114,14 @@ async def update_server_stats_once():
             if bots_channel.name != name:
                 await bots_channel.edit(name=name)
     except Exception as e:
-        print("Erreur server stats :", e)
+        print("Erreur stats :", e)
 
 @tasks.loop(minutes=1)
 async def update_server_stats_loop():
     await update_server_stats_once()
 
 # =========================================================
-# PANELS
+# PANELS / WELCOME
 # =========================================================
 
 async def ensure_panel(channel: discord.TextChannel, kind: str):
@@ -1183,6 +1132,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
             msg = await safe_fetch_message(channel, message_id)
             if msg:
                 return
+
         embed = discord.Embed(
             title="🎉 Giveaway Staff",
             description="Bouton réservé aux modérateurs pour créer un giveaway.",
@@ -1199,6 +1149,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
             msg = await safe_fetch_message(channel, message_id)
             if msg:
                 return
+
         embed = discord.Embed(
             title="🎫 Support",
             description="Clique sur le bouton ci-dessous pour ouvrir un ticket privé.",
@@ -1215,6 +1166,7 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
             msg = await safe_fetch_message(channel, message_id)
             if msg:
                 return
+
         embed = discord.Embed(
             title="🛡️ Vérification",
             description="Clique sur le bouton pour lancer la vérification captcha.",
@@ -1224,13 +1176,10 @@ async def ensure_panel(channel: discord.TextChannel, kind: str):
         data["panel_message_id"] = msg.id
         save_json(VERIFY_FILE, data)
 
-# =========================================================
-# WELCOME
-# =========================================================
-
 async def send_verify_welcome(member: discord.Member):
     if not SEND_VERIFY_WELCOME_MESSAGE:
         return
+
     channel = member.guild.get_channel(VERIFY_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
@@ -1249,13 +1198,14 @@ async def send_verify_welcome(member: discord.Member):
     if member.display_avatar:
         embed.set_thumbnail(url=member.display_avatar.url)
     embed.set_footer(text="Clique sur le panneau de vérification ci-dessous.")
+
     try:
         await channel.send(embed=embed)
     except Exception:
         pass
 
 # =========================================================
-# SANCTION LOGS
+# SANCTION EVENTS
 # =========================================================
 
 @bot.event
@@ -1308,7 +1258,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             description=(
                 f"**Membre :** {after.mention}\n"
                 f"**ID :** `{after.id}`\n"
-                f"**Fin du timeout :** <t:{int(after_timeout.timestamp())}:F>"
+                f"**Fin :** <t:{int(after_timeout.timestamp())}:F>"
             ),
             color=discord.Color.orange(),
             timestamp=now_utc()
@@ -1344,188 +1294,6 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 # COMMANDS
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(ban_members=True)
-async def banid(ctx, user_id: int, *, reason="Aucune raison"):
-    guild = ctx.guild
-    if guild is None:
-        return
-    try:
-        user = await bot.fetch_user(user_id)
-        await guild.ban(user, reason=f"{reason} | Ban ID par {ctx.author}")
-        add_blacklist(user_id)
-        embed = discord.Embed(
-            title="🔨 Ban ID effectué",
-            description=(
-                f"**Utilisateur :** `{user}`\n"
-                f"**ID :** `{user_id}`\n"
-                f"**Modérateur :** {ctx.author.mention}\n"
-                f"**Raison :** {reason}"
-            ),
-            color=discord.Color.dark_red(),
-            timestamp=now_utc()
-        )
-        await log_security(guild, embed)
-        await ctx.send(f"✅ ID `{user_id}` banni et blacklisté.")
-    except Exception as e:
-        await ctx.send(f"❌ Impossible de bannir cet ID : `{e}`")
-
-@bot.command()
-@commands.has_permissions(ban_members=True)
-async def unbanid(ctx, user_id: int):
-    guild = ctx.guild
-    if guild is None:
-        return
-    try:
-        user = await bot.fetch_user(user_id)
-        await guild.unban(user, reason=f"Unban ID par {ctx.author}")
-        remove_blacklist(user_id)
-        embed = discord.Embed(
-            title="✅ Unban ID effectué",
-            description=(
-                f"**Utilisateur :** `{user}`\n"
-                f"**ID :** `{user_id}`\n"
-                f"**Modérateur :** {ctx.author.mention}"
-            ),
-            color=discord.Color.green(),
-            timestamp=now_utc()
-        )
-        await log_security(guild, embed)
-        await ctx.send(f"✅ ID `{user_id}` débanni et retiré de la blacklist.")
-    except Exception as e:
-        await ctx.send(f"❌ Impossible de débannir cet ID : `{e}`")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def raid(ctx, mode: str):
-    mode = mode.lower().strip()
-    if mode == "on":
-        await enable_raid_mode(ctx.guild, f"Activation manuelle par {ctx.author}")
-        await ctx.send("🚨 Mode raid activé.")
-    elif mode == "off":
-        await disable_raid_mode(ctx.guild)
-        await ctx.send("✅ Mode raid désactivé.")
-    else:
-        await ctx.send("Utilise `!raid on` ou `!raid off`.")
-
-# =========================================================
-# EVENTS
-# =========================================================
-
-@bot.tree.command(name="unbanid", description="Débannir un utilisateur par ID")
-@app_commands.describe(user_id="ID de l'utilisateur")
-async def slash_unbanid(interaction: discord.Interaction, user_id: str):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
-    if not interaction.user.guild_permissions.ban_members:
-        return await interaction.response.send_message(
-            "Tu n'as pas la permission.",
-            ephemeral=True
-        )
-
-    try:
-        target_id = int(user_id)
-    except ValueError:
-        return await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
-
-    try:
-        user = await bot.fetch_user(target_id)
-        await interaction.guild.unban(user, reason=f"Unban par {interaction.user}")
-        remove_blacklist(target_id)
-
-        embed = discord.Embed(
-            title="✅ Unban ID effectué",
-            description=(
-                f"**Utilisateur :** `{user}`\n"
-                f"**ID :** `{target_id}`\n"
-                f"**Modérateur :** {interaction.user.mention}"
-            ),
-            color=discord.Color.green(),
-            timestamp=now_utc()
-        )
-
-        await log_sanction(interaction.guild, embed)
-        await log_security(interaction.guild, embed)
-
-        await interaction.response.send_message(
-            f"✅ ID `{target_id}` débanni.",
-            ephemeral=True
-        )
-
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Impossible de débannir cet ID : `{e}`",
-            ephemeral=True
-        )
-
-@bot.tree.command(name="banid", description="Bannir un utilisateur par ID et le blacklister")
-@app_commands.describe(
-    user_id="ID de l'utilisateur",
-    delete_messages="Messages à supprimer",
-    reason="Raison du bannissement"
-)
-@app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
-async def slash_banid(
-    interaction: discord.Interaction,
-    user_id: str,
-    delete_messages: app_commands.Choice[int],
-    reason: str
-):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
-    if not interaction.user.guild_permissions.ban_members:
-        return await interaction.response.send_message(
-            "Tu n'as pas la permission de bannir.",
-            ephemeral=True
-        )
-
-    try:
-        target_id = int(user_id)
-    except ValueError:
-        return await interaction.response.send_message(
-            "❌ ID invalide.",
-            ephemeral=True
-        )
-
-    try:
-        user = await bot.fetch_user(target_id)
-
-        await interaction.guild.ban(
-            user,
-            delete_message_seconds=delete_messages.value,
-            reason=f"{reason} | par {interaction.user}"
-        )
-        add_blacklist(target_id)
-
-        embed = discord.Embed(
-            title="🔨 Ban ID effectué",
-            description=(
-                f"**Utilisateur :** `{user}`\n"
-                f"**ID :** `{target_id}`\n"
-                f"**Modérateur :** {interaction.user.mention}\n"
-                f"**Suppression messages :** `{delete_messages.name}`\n"
-                f"**Raison :** {reason}"
-            ),
-            color=discord.Color.dark_red(),
-            timestamp=now_utc()
-        )
-
-        await log_sanction(interaction.guild, embed)
-        await log_security(interaction.guild, embed)
-
-        await interaction.response.send_message(
-            f"✅ ID `{target_id}` banni et blacklisté.",
-            ephemeral=True
-        )
-
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Impossible de bannir cet ID : `{e}`",
-            ephemeral=True
-        )
-
 DELETE_MESSAGE_CHOICES = [
     app_commands.Choice(name="Don't Delete Any", value=0),
     app_commands.Choice(name="Previous Hour", value=3600),
@@ -1537,26 +1305,13 @@ DELETE_MESSAGE_CHOICES = [
 ]
 
 @bot.tree.command(name="ban", description="Bannir un membre du serveur")
-@app_commands.describe(
-    user="Membre à bannir",
-    delete_messages="Messages à supprimer",
-    reason="Raison du bannissement"
-)
+@app_commands.describe(user="Membre à bannir", delete_messages="Messages à supprimer", reason="Raison")
 @app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
-async def slash_ban(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    delete_messages: app_commands.Choice[int],
-    reason: str
-):
+async def slash_ban(interaction: discord.Interaction, user: discord.Member, delete_messages: app_commands.Choice[int], reason: str):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Action invalide.", ephemeral=True)
-
     if not interaction.user.guild_permissions.ban_members:
-        return await interaction.response.send_message(
-            "Tu n'as pas la permission de bannir.",
-            ephemeral=True
-        )
+        return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
 
     try:
         await interaction.guild.ban(
@@ -1578,20 +1333,106 @@ async def slash_ban(
             color=discord.Color.dark_red(),
             timestamp=now_utc()
         )
-
         await log_sanction(interaction.guild, embed)
         await log_security(interaction.guild, embed)
 
-        await interaction.response.send_message(
-            f"✅ {user.mention} a été banni.",
-            ephemeral=True
-        )
-
+        await interaction.response.send_message(f"✅ {user.mention} a été banni.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Impossible de bannir ce membre : `{e}`",
-            ephemeral=True
+        await interaction.response.send_message(f"❌ Impossible de bannir ce membre : `{e}`", ephemeral=True)
+
+@bot.tree.command(name="banid", description="Bannir un utilisateur par ID et le blacklister")
+@app_commands.describe(user_id="ID utilisateur", delete_messages="Messages à supprimer", reason="Raison")
+@app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
+async def slash_banid(interaction: discord.Interaction, user_id: str, delete_messages: app_commands.Choice[int], reason: str):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Action invalide.", ephemeral=True)
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+    try:
+        target_id = int(user_id)
+    except ValueError:
+        return await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
+
+    try:
+        user = await bot.fetch_user(target_id)
+        await interaction.guild.ban(
+            user,
+            delete_message_seconds=delete_messages.value,
+            reason=f"{reason} | par {interaction.user}"
         )
+        add_blacklist(target_id)
+
+        embed = discord.Embed(
+            title="🔨 Ban ID effectué",
+            description=(
+                f"**Utilisateur :** `{user}`\n"
+                f"**ID :** `{target_id}`\n"
+                f"**Modérateur :** {interaction.user.mention}\n"
+                f"**Suppression messages :** `{delete_messages.name}`\n"
+                f"**Raison :** {reason}"
+            ),
+            color=discord.Color.dark_red(),
+            timestamp=now_utc()
+        )
+        await log_sanction(interaction.guild, embed)
+        await log_security(interaction.guild, embed)
+
+        await interaction.response.send_message(f"✅ ID `{target_id}` banni et blacklisté.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Impossible de bannir cet ID : `{e}`", ephemeral=True)
+
+@bot.tree.command(name="unbanid", description="Débannir un utilisateur par ID")
+@app_commands.describe(user_id="ID utilisateur")
+async def slash_unbanid(interaction: discord.Interaction, user_id: str):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Action invalide.", ephemeral=True)
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+    try:
+        target_id = int(user_id)
+    except ValueError:
+        return await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
+
+    try:
+        user = await bot.fetch_user(target_id)
+        await interaction.guild.unban(user, reason=f"Unban par {interaction.user}")
+        remove_blacklist(target_id)
+
+        embed = discord.Embed(
+            title="✅ Unban ID effectué",
+            description=(
+                f"**Utilisateur :** `{user}`\n"
+                f"**ID :** `{target_id}`\n"
+                f"**Modérateur :** {interaction.user.mention}"
+            ),
+            color=discord.Color.green(),
+            timestamp=now_utc()
+        )
+        await log_sanction(interaction.guild, embed)
+        await log_security(interaction.guild, embed)
+
+        await interaction.response.send_message(f"✅ ID `{target_id}` débanni.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Impossible de débannir cet ID : `{e}`", ephemeral=True)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def raid(ctx, mode: str):
+    mode = mode.lower().strip()
+    if mode == "on":
+        await enable_raid_mode(ctx.guild, f"Activation manuelle par {ctx.author}")
+        await ctx.send("🚨 Mode raid activé.")
+    elif mode == "off":
+        await disable_raid_mode(ctx.guild)
+        await ctx.send("✅ Mode raid désactivé.")
+    else:
+        await ctx.send("Utilise `!raid on` ou `!raid off`.")
+
+# =========================================================
+# MEMBER EVENTS
+# =========================================================
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -1797,6 +1638,10 @@ async def on_member_remove(member: discord.Member):
 
     await update_server_stats_once()
 
+# =========================================================
+# MESSAGE PROTECTION
+# =========================================================
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -1907,7 +1752,12 @@ async def on_message(message: discord.Message):
 
 app = Flask(__name__)
 
-    async def fetch_bans_payload():
+def auth_ok():
+    if not WEB_TOKEN:
+        return True
+    return request.args.get("token", "") == WEB_TOKEN
+
+async def fetch_bans_payload():
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return {
@@ -1934,11 +1784,40 @@ app = Flask(__name__)
         "bans": bans,
         "blacklist_ids": load_blacklist()["banned_ids"]
     }
+
 @app.route("/")
 def home():
     if not auth_ok():
         abort(403)
-    return "<h2>Xerax bot web panel</h2><p>Routes: /bans</p>"
+    return """
+    <html>
+    <head>
+        <title>Xerax Panel</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background: #0f172a;
+                color: white;
+                padding: 40px;
+            }
+            a {
+                color: #93c5fd;
+                text-decoration: none;
+                font-size: 20px;
+            }
+            code {
+                background: #1f2937;
+                padding: 4px 8px;
+                border-radius: 6px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Xerax Panel</h1>
+        <p>Route disponible : <code>/bans?token=TON_WEB_TOKEN</code></p>
+    </body>
+    </html>
+    """
 
 @app.route("/bans")
 def bans_page():
@@ -1995,13 +1874,6 @@ def bans_page():
                 margin-bottom: 24px;
                 box-shadow: 0 8px 24px rgba(0,0,0,.25);
             }}
-            h1, h2 {{
-                margin-top: 0;
-            }}
-            .muted {{
-                color: #9ca3af;
-                margin-bottom: 20px;
-            }}
             table {{
                 width: 100%;
                 border-collapse: collapse;
@@ -2014,11 +1886,6 @@ def bans_page():
             th {{
                 color: #93c5fd;
             }}
-            code {{
-                background: #1f2937;
-                padding: 2px 6px;
-                border-radius: 6px;
-            }}
             ul {{
                 padding-left: 20px;
             }}
@@ -2028,7 +1895,6 @@ def bans_page():
         <div class="container">
             <div class="card">
                 <h1>Liste des bannis</h1>
-                <div class="muted">Serveur Discord : bannissements actifs</div>
                 <table>
                     <thead>
                         <tr>
@@ -2045,7 +1911,6 @@ def bans_page():
 
             <div class="card">
                 <h2>Blacklist IDs</h2>
-                <div class="muted">Utilisateurs à re-ban automatiquement s’ils reviennent</div>
                 <ul>
                     {blacklist_html}
                 </ul>
@@ -2055,6 +1920,10 @@ def bans_page():
     </html>
     """
     return html
+
+def run_web():
+    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+
 # =========================================================
 # TASKS
 # =========================================================
@@ -2111,6 +1980,14 @@ async def on_ready():
     if isinstance(verify_channel, discord.TextChannel):
         await ensure_panel(verify_channel, "verify")
 
+    try:
+        guild_obj = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild_obj)
+        synced = await bot.tree.sync(guild=guild_obj)
+        print(f"Slash commands synchronisées : {len(synced)}")
+    except Exception as e:
+        print("Erreur sync slash commands :", e)
+
     if not giveaway_watcher.is_running():
         giveaway_watcher.start()
     if not verify_timeout_watcher.is_running():
@@ -2120,14 +1997,6 @@ async def on_ready():
     if not raid_mode_watcher.is_running():
         raid_mode_watcher.start()
 
-        try:
-        guild_obj = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild_obj)
-        synced = await bot.tree.sync(guild=guild_obj)
-        print(f"Slash commands synchronisées: {len(synced)}")
-    except Exception as e:
-        print("Erreur sync slash commands:", e)
-    
     await update_server_stats_once()
 
 # =========================================================
