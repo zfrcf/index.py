@@ -1412,6 +1412,73 @@ async def raid(ctx, mode: str):
 # EVENTS
 # =========================================================
 
+DELETE_MESSAGE_CHOICES = [
+    app_commands.Choice(name="Don't Delete Any", value=0),
+    app_commands.Choice(name="Previous Hour", value=3600),
+    app_commands.Choice(name="Previous 6 Hours", value=21600),
+    app_commands.Choice(name="Previous 12 Hours", value=43200),
+    app_commands.Choice(name="Previous 24 Hours", value=86400),
+    app_commands.Choice(name="Previous 3 Days", value=259200),
+    app_commands.Choice(name="Previous 7 Days", value=604800),
+]
+
+@bot.tree.command(name="ban", description="Bannir un membre du serveur")
+@app_commands.describe(
+    user="Membre à bannir",
+    delete_messages="Messages à supprimer",
+    reason="Raison du bannissement"
+)
+@app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
+async def slash_ban(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    delete_messages: app_commands.Choice[int],
+    reason: str
+):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message(
+            "Tu n'as pas la permission de bannir.",
+            ephemeral=True
+        )
+
+    try:
+        await interaction.guild.ban(
+            user,
+            delete_message_seconds=delete_messages.value,
+            reason=f"{reason} | par {interaction.user}"
+        )
+        add_blacklist(user.id)
+
+        embed = discord.Embed(
+            title="🔨 Bannissement effectué",
+            description=(
+                f"**Membre :** {user.mention}\n"
+                f"**ID :** `{user.id}`\n"
+                f"**Modérateur :** {interaction.user.mention}\n"
+                f"**Suppression messages :** `{delete_messages.name}`\n"
+                f"**Raison :** {reason}"
+            ),
+            color=discord.Color.dark_red(),
+            timestamp=now_utc()
+        )
+
+        await log_sanction(interaction.guild, embed)
+        await log_security(interaction.guild, embed)
+
+        await interaction.response.send_message(
+            f"✅ {user.mention} a été banni.",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Impossible de bannir ce membre : `{e}`",
+            ephemeral=True
+        )
+
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild.id != GUILD_ID:
@@ -1726,10 +1793,14 @@ async def on_message(message: discord.Message):
 
 app = Flask(__name__)
 
-async def fetch_bans_payload():
+    async def fetch_bans_payload():
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
-        return {"guild_found": False, "bans": [], "blacklist_ids": load_blacklist()["banned_ids"]}
+        return {
+            "guild_found": False,
+            "bans": [],
+            "blacklist_ids": load_blacklist()["banned_ids"]
+        }
 
     bans = []
     try:
@@ -1742,17 +1813,13 @@ async def fetch_bans_payload():
     except Exception:
         pass
 
+    bans.sort(key=lambda x: str(x["name"]).lower())
+
     return {
         "guild_found": True,
         "bans": bans,
         "blacklist_ids": load_blacklist()["banned_ids"]
     }
-
-def auth_ok():
-    if not WEB_TOKEN:
-        return True
-    return request.args.get("token", "") == WEB_TOKEN
-
 @app.route("/")
 def home():
     if not auth_ok():
