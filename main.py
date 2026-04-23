@@ -19,7 +19,6 @@ from webapp import create_app
 
 class XeraxBot(commands.Bot):
     async def setup_hook(self):
-        # Les vues persistantes doivent être ajoutées ici
         self.add_view(GiveawayStaffPanelView())
         self.add_view(GiveawayJoinView())
         self.add_view(GiveawayEndedView())
