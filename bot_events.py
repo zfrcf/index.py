@@ -304,12 +304,12 @@ def setup_events(bot):
         print(f"Connecté en tant que {bot.user} ({bot.user.id})")
         await ensure_panels(bot)
 
-        try:
-            guild_obj = discord.Object(id=GUILD_ID)
-            synced = await bot.tree.sync(guild=guild_obj)
-            print(f"Slash commands synchronisées : {len(synced)}")
-        except Exception as e:
-            print("Erreur sync slash commands :", e)
+       try:
+    guild_obj = discord.Object(id=GUILD_ID)
+    synced = await bot.tree.sync(guild=guild_obj)
+    print("Slash synchronisées :", [cmd.name for cmd in synced])
+except Exception as e:
+    print("Erreur sync slash commands :", e)
 
         if not giveaway_watcher.is_running():
             giveaway_watcher.start()
