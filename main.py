@@ -2120,6 +2120,14 @@ async def on_ready():
     if not raid_mode_watcher.is_running():
         raid_mode_watcher.start()
 
+        try:
+        guild_obj = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild_obj)
+        synced = await bot.tree.sync(guild=guild_obj)
+        print(f"Slash commands synchronisées: {len(synced)}")
+    except Exception as e:
+        print("Erreur sync slash commands:", e)
+    
     await update_server_stats_once()
 
 # =========================================================
