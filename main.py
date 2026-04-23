@@ -11,6 +11,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from flask import Flask, request, abort
@@ -1777,49 +1778,102 @@ def bans_page():
     rows = []
     for b in payload["bans"]:
         rows.append(
-            f"<tr><td>{b['id']}</td><td>{b['name']}</td><td>{b['reason']}</td></tr>"
+            f"""
+            <tr>
+                <td>{b['id']}</td>
+                <td>{b['name']}</td>
+                <td>{b['reason'] or 'Aucune'}</td>
+            </tr>
+            """
         )
-    bans_html = "".join(rows) or "<tr><td colspan='3'>Aucun ban.</td></tr>"
 
-    blacklist_rows = "".join(f"<li>{uid}</li>" for uid in payload["blacklist_ids"]) or "<li>Aucun ID blacklisté.</li>"
+    bans_html = "".join(rows) or "<tr><td colspan='3'>Aucun banni.</td></tr>"
+    blacklist_html = "".join(f"<li>{uid}</li>" for uid in payload["blacklist_ids"]) or "<li>Aucun ID blacklisté.</li>"
 
     html = f"""
     <html>
     <head>
-        <title>Xerax - Bans</title>
+        <title>Xerax - Bannissements</title>
         <style>
-            body {{ font-family: Arial, sans-serif; background:#111827; color:#f3f4f6; padding:30px; }}
-            .card {{ background:#1f2937; border-radius:12px; padding:20px; margin-bottom:20px; }}
-            table {{ width:100%; border-collapse:collapse; }}
-            th, td {{ border-bottom:1px solid #374151; padding:10px; text-align:left; }}
-            th {{ color:#93c5fd; }}
-            h1, h2 {{ margin-top:0; }}
+            body {{
+                margin: 0;
+                font-family: Arial, sans-serif;
+                background: #0f172a;
+                color: #e5e7eb;
+                padding: 30px;
+            }}
+            .container {{
+                max-width: 1100px;
+                margin: 0 auto;
+            }}
+            .card {{
+                background: #111827;
+                border: 1px solid #1f2937;
+                border-radius: 16px;
+                padding: 20px;
+                margin-bottom: 24px;
+                box-shadow: 0 8px 24px rgba(0,0,0,.25);
+            }}
+            h1, h2 {{
+                margin-top: 0;
+            }}
+            .muted {{
+                color: #9ca3af;
+                margin-bottom: 20px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th, td {{
+                padding: 12px;
+                border-bottom: 1px solid #1f2937;
+                text-align: left;
+            }}
+            th {{
+                color: #93c5fd;
+            }}
+            code {{
+                background: #1f2937;
+                padding: 2px 6px;
+                border-radius: 6px;
+            }}
+            ul {{
+                padding-left: 20px;
+            }}
         </style>
     </head>
     <body>
-        <div class="card">
-            <h1>Bans du serveur</h1>
-            <table>
-                <thead>
-                    <tr><th>ID</th><th>Nom</th><th>Raison</th></tr>
-                </thead>
-                <tbody>
-                    {bans_html}
-                </tbody>
-            </table>
-        </div>
-        <div class="card">
-            <h2>Blacklist IDs</h2>
-            <ul>{blacklist_rows}</ul>
+        <div class="container">
+            <div class="card">
+                <h1>Liste des bannis</h1>
+                <div class="muted">Serveur Discord : bannissements actifs</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nom</th>
+                            <th>Raison</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {bans_html}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>Blacklist IDs</h2>
+                <div class="muted">Utilisateurs à re-ban automatiquement s’ils reviennent</div>
+                <ul>
+                    {blacklist_html}
+                </ul>
+            </div>
         </div>
     </body>
     </html>
     """
     return html
-
-def run_web():
-    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
-
 # =========================================================
 # TASKS
 # =========================================================
