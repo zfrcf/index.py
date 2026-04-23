@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from flask import Flask, request, abort
+from flask import Flask, request, abort, render_template, jsonify
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # =========================================================
@@ -21,11 +21,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # =========================================================
 
 TOKEN = os.getenv("TOKEN")
+WEB_TOKEN = os.getenv("WEB_TOKEN", "secret")
+PORT = int(os.getenv("PORT", "8080"))
+
 if not TOKEN:
     raise RuntimeError("La variable d'environnement TOKEN est introuvable.")
-
-WEB_TOKEN = os.getenv("WEB_TOKEN", "")
-PORT = int(os.getenv("PORT", "8080"))
 
 # =========================================================
 # DATA DIR / FILES
@@ -47,11 +47,8 @@ SECURITY_FILE = os.path.join(DATA_DIR, "security.json")
 GUILD_ID = 1336409517298286612
 
 # ---------- GIVEAWAYS ----------
-# Salon staff où seul le staff voit le bouton de création
 GIVEAWAY_STAFF_PANEL_CHANNEL_ID = 1496178317739556994
-# Salon public où les giveaways sont envoyés
 GIVEAWAY_PUBLIC_CHANNEL_ID = 1496178317739556994
-# Rôle autorisé à créer / reroll
 GIVEAWAY_ALLOWED_ROLE_ID = 1496179072005443644
 
 # ---------- TICKETS ----------
@@ -69,23 +66,19 @@ MAX_VERIFY_TRIES = 3
 SEND_VERIFY_WELCOME_MESSAGE = True
 
 # ---------- STATS ----------
-ALL_MEMBERS_CHANNEL_ID = 1496534691715743854
-MEMBERS_CHANNEL_ID = 1496538997323862179
-BOTS_CHANNEL_ID = 1496539148570591252
+ALL_MEMBERS_CHANNEL_ID = 0
+MEMBERS_CHANNEL_ID = 0
+BOTS_CHANNEL_ID = 0
 
 # ---------- LOGS ----------
-MEMBER_LOG_CHANNEL_ID = 1496554423491760218
-VERIFY_LOG_CHANNEL_ID = 1496461263381856388
-SANCTION_LOG_CHANNEL_ID = 1496901160194281522
-SECURITY_LOG_CHANNEL_ID = 1496588030574858280
+MEMBER_LOG_CHANNEL_ID = 0
+VERIFY_LOG_CHANNEL_ID = 0
+SANCTION_LOG_CHANNEL_ID = 0
+SECURITY_LOG_CHANNEL_ID = 0
 
 # ---------- WHITELIST ----------
-STAFF_ROLE_IDS = [
-    1496179072005443644, 1496580916502593646, 1496581144597237981,
-]
-PARTNER_ROLE_IDS = [
-    # ajoute ici des rôles partenaires si besoin
-]
+STAFF_ROLE_IDS = [1496179072005443644]
+PARTNER_ROLE_IDS = []
 
 # ---------- ANTI ALT / DOUBLE ----------
 MIN_ACCOUNT_AGE_DAYS = 3
@@ -230,11 +223,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 message_tracker = defaultdict(lambda: deque())
 
 # =========================================================
-# ROLE / PROFILE HELPERS
+# HELPERS
 # =========================================================
 
 def has_role(member: discord.Member, role_id: int) -> bool:
-    return any(role.id == role_id for role in member.roles)
+    return role_id != 0 and any(role.id == role_id for role in member.roles)
 
 def has_any_role(member: discord.Member, role_ids: list[int]) -> bool:
     return any(role.id in role_ids for role in member.roles)
@@ -301,10 +294,6 @@ def contains_links(content: str) -> bool:
 def mass_mention_count(message: discord.Message) -> int:
     return len(message.mentions) + len(message.role_mentions)
 
-# =========================================================
-# BLACKLIST / RAID HELPERS
-# =========================================================
-
 def is_blacklisted(user_id: int) -> bool:
     return user_id in load_blacklist()["banned_ids"]
 
@@ -341,6 +330,128 @@ def raid_mode_active() -> bool:
         return False
 
     return True
+
+async def timeout_member(member: discord.Member, minutes: int, reason: str):
+    until = now_utc() + timedelta(minutes=minutes)
+    try:
+        await member.edit(timed_out_until=until, reason=reason)
+        return True
+    except Exception:
+        return False
+
+async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
+    try:
+        return await channel.fetch_message(message_id)
+    except Exception:
+        return None
+
+async def _send_embed(channel_id: int, embed: discord.Embed):
+    if channel_id == 0:
+        return
+    channel = bot.get_channel(channel_id)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+async def log_member_event(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(MEMBER_LOG_CHANNEL_ID, embed)
+
+async def log_verify_event(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(VERIFY_LOG_CHANNEL_ID, embed)
+
+async def log_sanction(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(SANCTION_LOG_CHANNEL_ID, embed)
+
+async def log_security(guild: discord.Guild, embed: discord.Embed):
+    await _send_embed(SECURITY_LOG_CHANNEL_ID, embed)
+
+async def log_ticket_action(guild: discord.Guild, content: str):
+    if TICKET_LOG_CHANNEL_ID == 0:
+        return
+    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(content)
+        except Exception:
+            pass
+
+# =========================================================
+# CAPTCHA IMAGE
+# =========================================================
+
+def get_font(size: int):
+    possible_fonts = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for path in possible_fonts:
+        try:
+            return ImageFont.truetype(path, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+def generate_captcha_image(code: str) -> io.BytesIO:
+    width, height = 340, 120
+    image = Image.new("RGB", (width, height), (245, 247, 252))
+    draw = ImageDraw.Draw(image)
+
+    for _ in range(25):
+        x1 = random.randint(0, width)
+        y1 = random.randint(0, height)
+        x2 = x1 + random.randint(20, 80)
+        y2 = y1 + random.randint(5, 30)
+        color = (random.randint(180, 230), random.randint(180, 230), random.randint(180, 230))
+        draw.ellipse((x1, y1, x2, y2), outline=color, width=1)
+
+    for _ in range(10):
+        draw.line(
+            (
+                random.randint(0, width),
+                random.randint(0, height),
+                random.randint(0, width),
+                random.randint(0, height),
+            ),
+            fill=(random.randint(70, 180), random.randint(70, 180), random.randint(70, 180)),
+            width=random.randint(1, 3),
+        )
+
+    font = get_font(42)
+    x = 25
+    for char in code:
+        y = random.randint(20, 45)
+        color = (random.randint(20, 90), random.randint(20, 90), random.randint(20, 90))
+        angle = random.randint(-20, 20)
+
+        char_img = Image.new("RGBA", (60, 70), (255, 255, 255, 0))
+        char_draw = ImageDraw.Draw(char_img)
+        char_draw.text((10, 5), char, font=font, fill=color)
+        char_img = char_img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=1)
+        image.paste(char_img, (x, y), char_img)
+        x += random.randint(42, 52)
+
+    for _ in range(1200):
+        draw.point(
+            (random.randint(0, width - 1), random.randint(0, height - 1)),
+            fill=(random.randint(120, 220), random.randint(120, 220), random.randint(120, 220)),
+        )
+
+    image = image.filter(ImageFilter.SMOOTH)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+def captcha_discord_file(code: str) -> discord.File:
+    return discord.File(generate_captcha_image(code), filename="captcha.png")
+
+# =========================================================
+# RAID / LOCKDOWN
+# =========================================================
 
 async def lockdown_guild(guild: discord.Guild):
     security = load_security()
@@ -424,7 +535,7 @@ async def enable_raid_mode(guild: discord.Guild, reason: str):
         title="🚨 Mode raid activé",
         description=(
             f"**Raison :** {reason}\n"
-            f"**Durée :** {RAID_MODE_DURATION}s\n"
+            f"**Durée :** {RAID_MODE_DURATION} secondes\n"
             f"**Lockdown :** {'Oui' if RAID_LOCKDOWN_CHANNELS else 'Non'}\n"
             f"**Invites bloquées :** {'Oui' if RAID_DISABLE_INVITES else 'Non'}"
         ),
@@ -452,139 +563,6 @@ async def disable_raid_mode(guild: discord.Guild):
         timestamp=now_utc()
     )
     await log_security(guild, embed)
-
-async def timeout_member(member: discord.Member, minutes: int, reason: str):
-    until = now_utc() + timedelta(minutes=minutes)
-    try:
-        await member.edit(timed_out_until=until, reason=reason)
-        return True
-    except Exception:
-        return False
-
-# =========================================================
-# LOG HELPERS
-# =========================================================
-
-async def safe_fetch_message(channel: discord.TextChannel, message_id: int):
-    try:
-        return await channel.fetch_message(message_id)
-    except Exception:
-        return None
-
-async def _send_embed(channel_id: int, embed: discord.Embed):
-    channel = bot.get_channel(channel_id)
-    if isinstance(channel, discord.TextChannel):
-        try:
-            await channel.send(embed=embed)
-        except Exception:
-            pass
-
-async def log_member_event(guild: discord.Guild, embed: discord.Embed):
-    await _send_embed(MEMBER_LOG_CHANNEL_ID, embed)
-
-async def log_verify_event(guild: discord.Guild, embed: discord.Embed):
-    await _send_embed(VERIFY_LOG_CHANNEL_ID, embed)
-
-async def log_sanction(guild: discord.Guild, embed: discord.Embed):
-    await _send_embed(SANCTION_LOG_CHANNEL_ID, embed)
-
-async def log_security(guild: discord.Guild, embed: discord.Embed):
-    await _send_embed(SECURITY_LOG_CHANNEL_ID, embed)
-
-async def log_ticket_action(guild: discord.Guild, content: str):
-    channel = guild.get_channel(TICKET_LOG_CHANNEL_ID)
-    if isinstance(channel, discord.TextChannel):
-        try:
-            await channel.send(content)
-        except Exception:
-            pass
-
-# =========================================================
-# CAPTCHA IMAGE
-# =========================================================
-
-def get_font(size: int):
-    possible_fonts = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-    ]
-    for path in possible_fonts:
-        try:
-            return ImageFont.truetype(path, size=size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-def generate_captcha_image(code: str) -> io.BytesIO:
-    width, height = 340, 120
-    image = Image.new("RGB", (width, height), (245, 247, 252))
-    draw = ImageDraw.Draw(image)
-
-    for _ in range(25):
-        x1 = random.randint(0, width)
-        y1 = random.randint(0, height)
-        x2 = x1 + random.randint(20, 80)
-        y2 = y1 + random.randint(5, 30)
-        color = (
-            random.randint(180, 230),
-            random.randint(180, 230),
-            random.randint(180, 230),
-        )
-        draw.ellipse((x1, y1, x2, y2), outline=color, width=1)
-
-    for _ in range(10):
-        draw.line(
-            (
-                random.randint(0, width),
-                random.randint(0, height),
-                random.randint(0, width),
-                random.randint(0, height),
-            ),
-            fill=(
-                random.randint(70, 180),
-                random.randint(70, 180),
-                random.randint(70, 180),
-            ),
-            width=random.randint(1, 3),
-        )
-
-    font = get_font(42)
-    x = 25
-    for char in code:
-        y = random.randint(20, 45)
-        color = (
-            random.randint(20, 90),
-            random.randint(20, 90),
-            random.randint(20, 90),
-        )
-        angle = random.randint(-20, 20)
-
-        char_img = Image.new("RGBA", (60, 70), (255, 255, 255, 0))
-        char_draw = ImageDraw.Draw(char_img)
-        char_draw.text((10, 5), char, font=font, fill=color)
-        char_img = char_img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=1)
-        image.paste(char_img, (x, y), char_img)
-        x += random.randint(42, 52)
-
-    for _ in range(1200):
-        draw.point(
-            (random.randint(0, width - 1), random.randint(0, height - 1)),
-            fill=(
-                random.randint(120, 220),
-                random.randint(120, 220),
-                random.randint(120, 220),
-            ),
-        )
-
-    image = image.filter(ImageFilter.SMOOTH)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
-
-def captcha_discord_file(code: str) -> discord.File:
-    return discord.File(generate_captcha_image(code), filename="captcha.png")
 
 # =========================================================
 # GIVEAWAYS
@@ -1263,14 +1241,6 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             color=discord.Color.orange(),
             timestamp=now_utc()
         )
-        try:
-            async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                if entry.target.id == after.id:
-                    embed.add_field(name="Modérateur", value=entry.user.mention, inline=True)
-                    embed.add_field(name="Raison", value=entry.reason or "Aucune", inline=True)
-                    break
-        except Exception:
-            pass
         await log_sanction(after.guild, embed)
 
     if before_timeout is not None and after_timeout is None:
@@ -1280,14 +1250,6 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             color=discord.Color.green(),
             timestamp=now_utc()
         )
-        try:
-            async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                if entry.target.id == after.id:
-                    embed.add_field(name="Modérateur", value=entry.user.mention, inline=True)
-                    embed.add_field(name="Raison", value=entry.reason or "Aucune", inline=True)
-                    break
-        except Exception:
-            pass
         await log_sanction(after.guild, embed)
 
 # =========================================================
@@ -1335,12 +1297,11 @@ async def slash_ban(interaction: discord.Interaction, user: discord.Member, dele
         )
         await log_sanction(interaction.guild, embed)
         await log_security(interaction.guild, embed)
-
         await interaction.response.send_message(f"✅ {user.mention} a été banni.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Impossible de bannir ce membre : `{e}`", ephemeral=True)
 
-@bot.tree.command(name="banid", description="Bannir un utilisateur par ID et le blacklister")
+@bot.tree.command(name="banid", description="Bannir un utilisateur par ID")
 @app_commands.describe(user_id="ID utilisateur", delete_messages="Messages à supprimer", reason="Raison")
 @app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
 async def slash_banid(interaction: discord.Interaction, user_id: str, delete_messages: app_commands.Choice[int], reason: str):
@@ -1377,8 +1338,49 @@ async def slash_banid(interaction: discord.Interaction, user_id: str, delete_mes
         )
         await log_sanction(interaction.guild, embed)
         await log_security(interaction.guild, embed)
-
         await interaction.response.send_message(f"✅ ID `{target_id}` banni et blacklisté.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Impossible de bannir cet ID : `{e}`", ephemeral=True)
+
+@bot.tree.command(name="banip", description="Alias ban ID (Discord ne donne pas les IP au bot)")
+@app_commands.describe(user_id="ID utilisateur", delete_messages="Messages à supprimer", reason="Raison")
+@app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
+async def slash_banip(interaction: discord.Interaction, user_id: str, delete_messages: app_commands.Choice[int], reason: str):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Action invalide.", ephemeral=True)
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message("Tu n'as pas la permission.", ephemeral=True)
+
+    try:
+        target_id = int(user_id)
+    except ValueError:
+        return await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
+
+    try:
+        user = await bot.fetch_user(target_id)
+        await interaction.guild.ban(
+            user,
+            delete_message_seconds=delete_messages.value,
+            reason=f"{reason} | par {interaction.user} | alias /banip"
+        )
+        add_blacklist(target_id)
+
+        embed = discord.Embed(
+            title="🔨 /banip exécuté comme ban ID",
+            description=(
+                f"**Utilisateur :** `{user}`\n"
+                f"**ID :** `{target_id}`\n"
+                f"**Modérateur :** {interaction.user.mention}\n"
+                f"**Suppression messages :** `{delete_messages.name}`\n"
+                f"**Raison :** {reason}\n\n"
+                f"Discord ne donne pas l'IP au bot, donc cette commande agit comme un **ban ID + blacklist**."
+            ),
+            color=discord.Color.dark_red(),
+            timestamp=now_utc()
+        )
+        await log_sanction(interaction.guild, embed)
+        await log_security(interaction.guild, embed)
+        await interaction.response.send_message("✅ `/banip` appliqué en ban ID.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Impossible de bannir cet ID : `{e}`", ephemeral=True)
 
@@ -1412,7 +1414,6 @@ async def slash_unbanid(interaction: discord.Interaction, user_id: str):
         )
         await log_sanction(interaction.guild, embed)
         await log_security(interaction.guild, embed)
-
         await interaction.response.send_message(f"✅ ID `{target_id}` débanni.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Impossible de débannir cet ID : `{e}`", ephemeral=True)
@@ -1444,6 +1445,7 @@ async def on_member_join(member: discord.Member):
             await member.guild.ban(member, reason="ID blacklisté")
         except Exception:
             pass
+
         embed = discord.Embed(
             title="⛔ Membre blacklisté détecté",
             description=(
@@ -1586,10 +1588,7 @@ async def on_member_join(member: discord.Member):
         color=discord.Color.green(),
         timestamp=now_utc()
     )
-    if member.display_avatar:
-        join_embed.set_thumbnail(url=member.display_avatar.url)
     await log_member_event(member.guild, join_embed)
-
     await update_server_stats_once()
 
 @bot.event
@@ -1632,10 +1631,7 @@ async def on_member_remove(member: discord.Member):
         color=discord.Color.red(),
         timestamp=now_utc()
     )
-    if member.display_avatar:
-        leave_embed.set_thumbnail(url=member.display_avatar.url)
     await log_member_event(member.guild, leave_embed)
-
     await update_server_stats_once()
 
 # =========================================================
@@ -1747,10 +1743,10 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # =========================================================
-# WEB INTERFACE
+# WEB APP
 # =========================================================
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates")
 
 def auth_ok():
     if not WEB_TOKEN:
@@ -1789,137 +1785,27 @@ async def fetch_bans_payload():
 def home():
     if not auth_ok():
         abort(403)
-    return """
-    <html>
-    <head>
-        <title>Xerax Panel</title>
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                background: #0f172a;
-                color: white;
-                padding: 40px;
-            }
-            a {
-                color: #93c5fd;
-                text-decoration: none;
-                font-size: 20px;
-            }
-            code {
-                background: #1f2937;
-                padding: 4px 8px;
-                border-radius: 6px;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Xerax Panel</h1>
-        <p>Route disponible : <code>/bans?token=TON_WEB_TOKEN</code></p>
-    </body>
-    </html>
-    """
+    return render_template("home.html")
 
 @app.route("/bans")
 def bans_page():
+    if not auth_ok():
+        abort(403)
+    return render_template("bans.html")
+
+@app.route("/api/bans")
+def api_bans():
     if not auth_ok():
         abort(403)
 
     try:
         future = asyncio.run_coroutine_threadsafe(fetch_bans_payload(), bot.loop)
         payload = future.result(timeout=10)
+        return jsonify(payload)
     except FuturesTimeoutError:
-        return "<h3>Timeout lors de la récupération des bans.</h3>", 504
+        return jsonify({"error": "timeout"}), 504
     except Exception as e:
-        return f"<h3>Erreur : {e}</h3>", 500
-
-    if not payload["guild_found"]:
-        return "<h3>Serveur introuvable.</h3>", 404
-
-    rows = []
-    for b in payload["bans"]:
-        rows.append(
-            f"""
-            <tr>
-                <td>{b['id']}</td>
-                <td>{b['name']}</td>
-                <td>{b['reason'] or 'Aucune'}</td>
-            </tr>
-            """
-        )
-
-    bans_html = "".join(rows) or "<tr><td colspan='3'>Aucun banni.</td></tr>"
-    blacklist_html = "".join(f"<li>{uid}</li>" for uid in payload["blacklist_ids"]) or "<li>Aucun ID blacklisté.</li>"
-
-    html = f"""
-    <html>
-    <head>
-        <title>Xerax - Bannissements</title>
-        <style>
-            body {{
-                margin: 0;
-                font-family: Arial, sans-serif;
-                background: #0f172a;
-                color: #e5e7eb;
-                padding: 30px;
-            }}
-            .container {{
-                max-width: 1100px;
-                margin: 0 auto;
-            }}
-            .card {{
-                background: #111827;
-                border: 1px solid #1f2937;
-                border-radius: 16px;
-                padding: 20px;
-                margin-bottom: 24px;
-                box-shadow: 0 8px 24px rgba(0,0,0,.25);
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-            th, td {{
-                padding: 12px;
-                border-bottom: 1px solid #1f2937;
-                text-align: left;
-            }}
-            th {{
-                color: #93c5fd;
-            }}
-            ul {{
-                padding-left: 20px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="card">
-                <h1>Liste des bannis</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Nom</th>
-                            <th>Raison</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {bans_html}
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="card">
-                <h2>Blacklist IDs</h2>
-                <ul>
-                    {blacklist_html}
-                </ul>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    return html
+        return jsonify({"error": str(e)}), 500
 
 def run_web():
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
@@ -1982,7 +1868,6 @@ async def on_ready():
 
     try:
         guild_obj = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild_obj)
         synced = await bot.tree.sync(guild=guild_obj)
         print(f"Slash commands synchronisées : {len(synced)}")
     except Exception as e:
