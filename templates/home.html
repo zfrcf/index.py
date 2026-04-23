@@ -1,43 +1,160 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8" />
-  <title>Xerax Panel</title>
-  <style>
-    body {
-      margin: 0;
-      font-family: Arial, sans-serif;
-      background: #0f172a;
-      color: white;
-      padding: 40px;
-    }
-    .box {
-      max-width: 900px;
-      margin: auto;
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 16px;
-      padding: 24px;
-    }
-    a {
-      color: #93c5fd;
-      text-decoration: none;
-    }
-    code {
-      background: #1f2937;
-      padding: 4px 8px;
-      border-radius: 6px;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xerax Panel</title>
+
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #0f172a;
+    color: white;
+    padding: 30px;
+}
+
+.container {
+    max-width: 1100px;
+    margin: auto;
+}
+
+.card {
+    background: #111827;
+    border-radius: 15px;
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+
+h1 {
+    color: #38bdf8;
+    margin-top: 0;
+}
+
+h2 {
+    color: #60a5fa;
+    margin-top: 0;
+}
+
+p {
+    color: #d1d5db;
+    line-height: 1.5;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+}
+
+.link-card {
+    display: block;
+    text-decoration: none;
+    background: #1f2937;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    padding: 18px;
+    color: white;
+    transition: 0.2s ease;
+}
+
+.link-card:hover {
+    transform: translateY(-2px);
+    border-color: #38bdf8;
+    box-shadow: 0 8px 20px rgba(56, 189, 248, 0.12);
+}
+
+.link-title {
+    font-size: 20px;
+    font-weight: bold;
+    color: #38bdf8;
+    margin-bottom: 8px;
+}
+
+.link-desc {
+    color: #cbd5e1;
+    font-size: 14px;
+}
+
+.badge {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: #052e16;
+    color: #86efac;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.codebox {
+    background: #0b1220;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 14px;
+    overflow-x: auto;
+    color: #93c5fd;
+    font-family: Consolas, monospace;
+    font-size: 14px;
+}
+
+.muted {
+    color: #9ca3af;
+    font-size: 14px;
+}
+</style>
 </head>
 <body>
-  <div class="box">
-    <h1>Xerax Panel</h1>
-    <p>Le site est en ligne.</p>
-    <p>Page bans protégée :</p>
-    <p><code>/bans?token=TON_WEB_TOKEN</code></p>
-    <p>Healthcheck :</p>
-    <p><a href="/health">/health</a></p>
-  </div>
+
+<div class="container">
+
+    <div class="card">
+        <h1>Xerax Panel</h1>
+        <p>
+            Tableau de bord web du bot. Cette page permet d’accéder rapidement
+            à la liste des bannissements et à l’état du service.
+        </p>
+        <div class="badge">● PANEL EN LIGNE</div>
+    </div>
+
+    <div class="card">
+        <h2>Navigation</h2>
+        <div class="grid">
+            <a id="bans-link" class="link-card" href="#">
+                <div class="link-title">🔴 Bannissements LIVE</div>
+                <div class="link-desc">
+                    Voir tous les bannis et les IDs blacklistés, avec mise à jour automatique.
+                </div>
+            </a>
+
+            <a class="link-card" href="/health">
+                <div class="link-title">🟢 Healthcheck</div>
+                <div class="link-desc">
+                    Vérifier rapidement que le service web répond.
+                </div>
+            </a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Accès direct</h2>
+        <p class="muted">
+            Le token présent dans l’URL est réutilisé pour ouvrir la page bans.
+        </p>
+        <div class="codebox" id="direct-link">Chargement...</div>
+    </div>
+
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const token = params.get("token") || "";
+const bansUrl = `/bans?token=${encodeURIComponent(token)}`;
+
+document.getElementById("bans-link").href = bansUrl;
+document.getElementById("direct-link").textContent = bansUrl;
+</script>
+
 </body>
 </html>
