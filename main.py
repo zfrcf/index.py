@@ -1412,6 +1412,120 @@ async def raid(ctx, mode: str):
 # EVENTS
 # =========================================================
 
+@bot.tree.command(name="unbanid", description="Débannir un utilisateur par ID")
+@app_commands.describe(user_id="ID de l'utilisateur")
+async def slash_unbanid(interaction: discord.Interaction, user_id: str):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message(
+            "Tu n'as pas la permission.",
+            ephemeral=True
+        )
+
+    try:
+        target_id = int(user_id)
+    except ValueError:
+        return await interaction.response.send_message("❌ ID invalide.", ephemeral=True)
+
+    try:
+        user = await bot.fetch_user(target_id)
+        await interaction.guild.unban(user, reason=f"Unban par {interaction.user}")
+        remove_blacklist(target_id)
+
+        embed = discord.Embed(
+            title="✅ Unban ID effectué",
+            description=(
+                f"**Utilisateur :** `{user}`\n"
+                f"**ID :** `{target_id}`\n"
+                f"**Modérateur :** {interaction.user.mention}"
+            ),
+            color=discord.Color.green(),
+            timestamp=now_utc()
+        )
+
+        await log_sanction(interaction.guild, embed)
+        await log_security(interaction.guild, embed)
+
+        await interaction.response.send_message(
+            f"✅ ID `{target_id}` débanni.",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Impossible de débannir cet ID : `{e}`",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="banid", description="Bannir un utilisateur par ID et le blacklister")
+@app_commands.describe(
+    user_id="ID de l'utilisateur",
+    delete_messages="Messages à supprimer",
+    reason="Raison du bannissement"
+)
+@app_commands.choices(delete_messages=DELETE_MESSAGE_CHOICES)
+async def slash_banid(
+    interaction: discord.Interaction,
+    user_id: str,
+    delete_messages: app_commands.Choice[int],
+    reason: str
+):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Action invalide.", ephemeral=True)
+
+    if not interaction.user.guild_permissions.ban_members:
+        return await interaction.response.send_message(
+            "Tu n'as pas la permission de bannir.",
+            ephemeral=True
+        )
+
+    try:
+        target_id = int(user_id)
+    except ValueError:
+        return await interaction.response.send_message(
+            "❌ ID invalide.",
+            ephemeral=True
+        )
+
+    try:
+        user = await bot.fetch_user(target_id)
+
+        await interaction.guild.ban(
+            user,
+            delete_message_seconds=delete_messages.value,
+            reason=f"{reason} | par {interaction.user}"
+        )
+        add_blacklist(target_id)
+
+        embed = discord.Embed(
+            title="🔨 Ban ID effectué",
+            description=(
+                f"**Utilisateur :** `{user}`\n"
+                f"**ID :** `{target_id}`\n"
+                f"**Modérateur :** {interaction.user.mention}\n"
+                f"**Suppression messages :** `{delete_messages.name}`\n"
+                f"**Raison :** {reason}"
+            ),
+            color=discord.Color.dark_red(),
+            timestamp=now_utc()
+        )
+
+        await log_sanction(interaction.guild, embed)
+        await log_security(interaction.guild, embed)
+
+        await interaction.response.send_message(
+            f"✅ ID `{target_id}` banni et blacklisté.",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Impossible de bannir cet ID : `{e}`",
+            ephemeral=True
+        )
+
 DELETE_MESSAGE_CHOICES = [
     app_commands.Choice(name="Don't Delete Any", value=0),
     app_commands.Choice(name="Previous Hour", value=3600),
