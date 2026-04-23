@@ -1745,6 +1745,9 @@ async def on_message(message: discord.Message):
 # =========================================================
 # WEB APP
 # =========================================================
+# =========================================================
+# WEB APP
+# =========================================================
 
 app = Flask(__name__, template_folder="templates")
 
@@ -1783,9 +1786,11 @@ async def fetch_bans_payload():
 
 @app.route("/")
 def home():
-    if not auth_ok():
-        abort(403)
     return render_template("home.html")
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}, 200
 
 @app.route("/bans")
 def bans_page():
@@ -1808,8 +1813,7 @@ def api_bans():
         return jsonify({"error": str(e)}), 500
 
 def run_web():
-    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
-
+    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False, threaded=True)
 # =========================================================
 # TASKS
 # =========================================================
@@ -1887,7 +1891,6 @@ async def on_ready():
 # =========================================================
 # START
 # =========================================================
-
 if __name__ == "__main__":
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
