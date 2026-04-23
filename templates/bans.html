@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Xerax Panel - Bans Live</title>
+
+<style>
+body {
+    margin: 0;
+    font-family: Arial;
+    background: #0f172a;
+    color: white;
+    padding: 30px;
+}
+
+.container {
+    max-width: 1100px;
+    margin: auto;
+}
+
+.card {
+    background: #111827;
+    border-radius: 15px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+}
+
+h1 {
+    color: #38bdf8;
+}
+
+h2 {
+    color: #60a5fa;
+}
+
+.status {
+    margin-bottom: 10px;
+    font-size: 14px;
+    color: #9ca3af;
+}
+
+.live {
+    color: #22c55e;
+    font-weight: bold;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 10px;
+    border-bottom: 1px solid #1f2937;
+}
+
+th {
+    color: #38bdf8;
+}
+
+.error {
+    color: #f87171;
+}
+
+ul {
+    padding-left: 20px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="card">
+        <h1>🔴 Bannissements LIVE</h1>
+        <div class="status">
+            Statut : <span class="live">● LIVE</span> | Mise à jour toutes les 5s
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Nom</th>
+                    <th>Raison</th>
+                </tr>
+            </thead>
+            <tbody id="bans">
+                <tr><td colspan="3">Chargement...</td></tr>
+            </tbody>
+        </table>
+
+        <div id="error" class="error"></div>
+    </div>
+
+    <div class="card">
+        <h2>⚠️ Blacklist</h2>
+        <ul id="blacklist">
+            <li>Chargement...</li>
+        </ul>
+    </div>
+
+</div>
+
+<script>
+const token = new URLSearchParams(window.location.search).get("token");
+
+let lastData = "";
+
+async function loadData() {
+    try {
+        const res = await fetch("/api/bans?token=" + token);
+        const data = await res.json();
+
+        if (data.error) {
+            document.getElementById("error").innerText = data.error;
+            return;
+        }
+
+        const jsonString = JSON.stringify(data);
+
+        // évite de re-render si rien change
+        if (jsonString === lastData) return;
+        lastData = jsonString;
+
+        renderBans(data.bans);
+        renderBlacklist(data.blacklist_ids);
+
+        document.getElementById("error").innerText = "";
+
+    } catch (err) {
+        document.getElementById("error").innerText = "Erreur serveur";
+    }
+}
+
+function renderBans(bans) {
+    const table = document.getElementById("bans");
+
+    if (!bans || bans.length === 0) {
+        table.innerHTML = "<tr><td colspan='3'>Aucun banni</td></tr>";
+        return;
+    }
+
+    table.innerHTML = "";
+
+    bans.forEach(ban => {
+        const row = document.createElement("tr");
+
+        row.innerHTML = `
+            <td>${ban.id}</td>
+            <td>${ban.name}</td>
+            <td>${ban.reason || "Aucune"}</td>
+        `;
+
+        table.appendChild(row);
+    });
+}
+
+function renderBlacklist(list) {
+    const ul = document.getElementById("blacklist");
+
+    if (!list || list.length === 0) {
+        ul.innerHTML = "<li>Aucun</li>";
+        return;
+    }
+
+    ul.innerHTML = "";
+
+    list.forEach(id => {
+        const li = document.createElement("li");
+        li.textContent = id;
+        ul.appendChild(li);
+    });
+}
+
+// refresh toutes les 5 secondes
+setInterval(loadData, 5000);
+
+// premier chargement instant
+loadData();
+</script>
+
+</body>
+</html>
