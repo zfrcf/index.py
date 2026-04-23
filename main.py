@@ -1,5 +1,4 @@
 import threading
-
 import discord
 from discord.ext import commands
 
@@ -18,6 +17,17 @@ from bot_views import (
 from webapp import create_app
 
 
+class XeraxBot(commands.Bot):
+    async def setup_hook(self):
+        # Les vues persistantes doivent être ajoutées ici
+        self.add_view(GiveawayStaffPanelView())
+        self.add_view(GiveawayJoinView())
+        self.add_view(GiveawayEndedView())
+        self.add_view(TicketOpenView())
+        self.add_view(TicketManageView())
+        self.add_view(VerifyPanelView())
+
+
 def make_bot():
     intents = discord.Intents.default()
     intents.guilds = True
@@ -25,14 +35,7 @@ def make_bot():
     intents.messages = True
     intents.message_content = True
 
-    bot = commands.Bot(command_prefix="!", intents=intents)
-
-    bot.add_view(GiveawayStaffPanelView())
-    bot.add_view(GiveawayJoinView())
-    bot.add_view(GiveawayEndedView())
-    bot.add_view(TicketOpenView())
-    bot.add_view(TicketManageView())
-    bot.add_view(VerifyPanelView())
+    bot = XeraxBot(command_prefix="!", intents=intents)
 
     setup_commands(bot)
     setup_events(bot)
